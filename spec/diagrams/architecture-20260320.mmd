@@ -1,0 +1,42 @@
+graph TB
+    subgraph Host["Host Machine"]
+        direction TB
+        Supervisor["<b>Supervisor</b> :8400<br/>────────────────<br/>Container lifecycle<br/>Generation history<br/>Spawn / Promote / Rollback<br/>Dashboard"]
+
+        subgraph PrimeContainer["Prime Container"]
+            direction TB
+            Prime["<b>Prime</b> :8401<br/>────────────────<br/>Code factory<br/>LLM generation<br/>Verify decisions<br/>/health /stats /chat"]
+            Spec["<b>Spec</b><br/>CAMBRIAN-SPEC-002.md"]
+            Source["<b>Source</b><br/>Git repository"]
+            Prime --- Spec
+            Prime --- Source
+        end
+
+        subgraph LabContainer["Lab Container (ephemeral)"]
+            direction TB
+            TestRig["<b>Test Rig</b><br/>────────────────<br/>build → test → start<br/>→ health-check → report<br/><i>No LLM. No agentic loop.</i>"]
+            Artifact["<b>Artifact</b><br/>Generated codebase<br/>+ manifest"]
+            TestRig --- Artifact
+        end
+    end
+
+    LLM["<b>LLM API</b><br/>(Anthropic / other)"]
+
+    Prime -->|"POST /spawn<br/>{spec-hash, generation, artifact-path}"| Supervisor
+    Supervisor -->|"Creates container,<br/>injects artifact"| LabContainer
+    TestRig -->|"Viability report<br/>(stdout JSON)"| Supervisor
+    Supervisor -->|"Report forwarded"| Prime
+    Prime -->|"POST /promote or /rollback"| Supervisor
+    Prime -->|"Spec + history → generate code"| LLM
+    LLM -->|"Complete codebase"| Prime
+
+    style Host fill:#f8f9fa,stroke:#333,stroke-width:2px
+    style PrimeContainer fill:#e8f4fd,stroke:#2196F3,stroke-width:2px
+    style LabContainer fill:#fff3e0,stroke:#FF9800,stroke-width:2px,stroke-dasharray: 5 5
+    style Supervisor fill:#e8f5e9,stroke:#4CAF50,stroke-width:1px
+    style Prime fill:#e3f2fd,stroke:#2196F3,stroke-width:1px
+    style TestRig fill:#fff8e1,stroke:#FF9800,stroke-width:1px
+    style LLM fill:#f3e5f5,stroke:#9C27B0,stroke-width:1px
+    style Spec fill:#e3f2fd,stroke:#90CAF9,stroke-width:1px
+    style Source fill:#e3f2fd,stroke:#90CAF9,stroke-width:1px
+    style Artifact fill:#fff8e1,stroke:#FFB74D,stroke-width:1px
