@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "cambrian",
+  "project_id": "d30ad8b3-6c2f-412b-a411-6671de662479"
+}
