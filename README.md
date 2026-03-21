@@ -2,39 +2,83 @@
 
 A self-reproducing code factory. Cambrian reads a specification, calls an LLM, and produces a complete working codebase — including a new instance of itself capable of doing the same thing.
 
+<p align="center">
+  <img src="docs/images/cambrian-sea-monster.png" alt="Anomalocaris — apex predator of the Cambrian explosion" width="600">
+</p>
+
 ## Status
 
-Early design. The generative specification ([CAMBRIAN-SPEC-002](spec/CAMBRIAN-SPEC-002.md)) is drafted. No code yet.
+**Design phase — no running code yet.** The system spec is at [CAMBRIAN-SPEC-004](spec/CAMBRIAN-SPEC-004.md), the bootstrap plan at [BOOTSTRAP-SPEC-001](spec/BOOTSTRAP-SPEC-001.md). Next step: build the Supervisor and Test Rig, then generate Gen-1 Prime.
 
-## Goals
+## The Idea
 
-1. **Reproduce.** Prime reads a spec and generates a complete, working Prime from it. The generated Prime can do the same. This is M1.
-2. **Verify mechanically.** A dumb test rig (no LLM) checks every generation: does it build, do tests pass, does it start, does it respond. Binary: viable or not.
-3. **Stay language-agnostic.** The spec doesn't prescribe an implementation language. We'll evaluate Rust, Elixir, Python, and Mojo based on how well LLMs can generate correct code for each.
-4. **Evolve the spec, not the code.** Code is disposable — regenerated from scratch each generation. The specification is the genome. This is the key insight from Loom.
-5. **Self-modify (later).** Once reproduction works, Prime can mutate its own spec and test whether the mutation produces a fitter offspring. This is M2+.
+Code is disposable. The specification is the genome.
+
+An LLM-powered organism ("Prime") reads a spec and regenerates the entire codebase from scratch each generation. No diffs, no accumulated cruft, no path dependence. A mechanical test rig — no LLM involved — decides if the result is viable. If it is, the offspring replaces the parent. If not, it's discarded.
+
+This came from [Loom](https://github.com/lispmeister/loom), which tried source-code-level self-modification in ClojureScript. Loom proved the pipeline works (72 generations, 1 autonomous promotion) and that editing existing code is the wrong abstraction. Cambrian applies that lesson: evolve the genotype (spec), regenerate the phenotype (code) from scratch.
 
 ## Architecture
 
 Three components:
 
-- **Prime** — The organism. A code factory that reads a spec, calls an LLM to generate code, and asks the Supervisor to verify the result. Contains its own source code, its spec, and its running process.
-- **Supervisor** — Host-side infrastructure. Manages container lifecycle, generation history, and the promote/rollback decision. Not part of the organism.
-- **Test Rig** — Runs inside an ephemeral container. Builds the artifact, runs tests, checks health. Returns a structured viability report. No LLM involved.
+- **Prime** — The organism. Reads the spec, calls an LLM, produces a complete codebase, asks the Supervisor to verify it. Contains its own source, its spec, and its running process.
+- **Supervisor** — Host infrastructure. Manages Docker containers, tracks generation history, executes promote/rollback. Not part of the organism — it persists across generations.
+- **Test Rig** — Mechanical verification. Builds the artifact, runs tests, starts the process, checks health. Returns a binary viability verdict. No LLM involved.
+
+```
+  ┌───────────┐       ┌──────────────┐       ┌───────────┐
+  │   Prime   │──────▶│  Supervisor  │──────▶│ Test Rig  │
+  │ (organism)│  API  │    (host)    │ spawn │(container)│
+  └───────────┘       └──────────────┘       └───────────┘
+       │                     │                      │
+       │ reads spec          │ manages lifecycle    │ builds, tests,
+       │ calls LLM           │ tracks history       │ health-checks
+       │ writes artifact     │ promotes/rolls back  │ writes report
+```
+
+## Milestones
+
+- **M1: Reproduce.** Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. This is the immediate goal.
+- **M2: Self-modify.** Prime mutates its own spec and tests whether the mutation produces fitter offspring.
+
+## Tech Stack
+
+Everything is Python 3.14t (free-threaded, GIL disabled) for M1.
+
+| Component | Key Libraries |
+|-----------|--------------|
+| Async I/O | `aiohttp`, `aiodocker`, `asyncio` |
+| Validation | `pydantic` v2 (all I/O boundaries) |
+| Logging | `structlog` (JSON in containers, key-value in dev) |
+| Type checking | `pyright` strict mode, zero errors in CI |
+| Tooling | `uv`, `ruff`, `pytest` + `pytest-asyncio` |
+| Introspection | `rich`, `devtools`, `typing-inspect` |
 
 ## Project Structure
 
 ```
 spec/
-  CAMBRIAN-SPEC-001.md   — Original spec (carried from Loom)
-  CAMBRIAN-SPEC-002.md   — Current spec (language-agnostic, two-part)
-  diagrams/              — Architecture and sequence diagrams
+  CAMBRIAN-SPEC-004.md     — System spec (contracts, schemas, lifecycle)
+  BOOTSTRAP-SPEC-001.md    — Bootstrap spec (Supervisor, Test Rig, Docker)
+  SPEC-STYLE-GUIDE.md      — How to write specs
+  diagrams/                — Architecture and sequence diagrams (.mmd)
+lab-journal/               — Discussion and decision logs
+scripts/
+  setup-dev.sh             — Developer environment setup
+  setup-claude.sh          — Claude Code plugins and skills setup
 ```
+
+## Getting Started
+
+```bash
+git clone https://github.com/lispmeister/cambrian.git
+cd cambrian
+./scripts/setup-dev.sh
+```
+
+See [CLAUDE.md](CLAUDE.md) for development conventions and issue tracking workflow.
 
 ## License
 
 [MIT](LICENSE)
-
----
-
-Cambrian is the successor to [Loom](https://github.com/lispmeister/loom), which explored source-code-level self-modification in ClojureScript. Loom proved the pipeline works (72 generations, 1 autonomous promotion) and that the right level of abstraction for evolution is the specification, not the source code.
