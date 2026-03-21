@@ -12,6 +12,10 @@
 # When true, bd will use .beads/issues.jsonl as the source of truth
 # no-db: false
 
+# Pin Dolt server port to avoid port drift
+dolt:
+  port: 53400
+
 # Enable JSON output by default
 # json: false
 

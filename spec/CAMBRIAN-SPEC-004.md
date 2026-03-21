@@ -1,0 +1,643 @@
+---
+date: 2026-03-21
+author: Markus Fix <lispmeister@gmail.com>
+title: "Cambrian: Self-Reproducing Code Factory"
+tags: [cambrian, prime, self-hosting, spec, M1]
+ancestor: CAMBRIAN-SPEC-003
+---
+
+# CAMBRIAN-SPEC-004
+
+## Overview
+
+Cambrian is a self-reproducing code factory. A running instance (Prime) reads a specification, calls an LLM, and produces a complete working codebase — including a new Prime capable of doing the same thing. The code is disposable; the specification is the genome.
+
+Three components cooperate. Prime is the organism — it generates code from a spec and decides whether offspring are viable. The Supervisor is host-side infrastructure — it manages containers, tracks generation history, and executes promote/rollback operations. The Test Rig is a mechanical verification pipeline — it builds, tests, starts, and health-checks an artifact without any LLM involvement.
+
+This spec has two audiences. Sections 1–10 follow the standard spec structure and are written for agents implementing the system. Sections 11–12 separate the environment (infrastructure that persists across generations) from the genome (the definition of what Prime is, readable by an LLM to produce a working organism).
+
+The runtime execution path:
+
+- Prime loads the spec from its local filesystem
+- Prime sends the spec + generation history to an LLM
+- The LLM produces a complete codebase; Prime writes it to a workspace with a `manifest.json`
+- Prime commits the artifact to a `gen-N` git branch
+- Prime asks the Supervisor to spawn a Test Rig container with the artifact
+- The Test Rig reads `manifest.json`, builds, tests, starts, health-checks, writes a viability report
+- The Supervisor collects the report and returns it to Prime
+- Prime tells the Supervisor to promote (merge + tag) or rollback (discard branch)
+
+## Problem Statement
+
+Loom (the predecessor project) proved that an LLM-powered agent can autonomously modify its own source code, verify the changes, and promote them. It also proved that source-code-level evolution is the wrong abstraction:
+
+- **Cruft accumulation.** Each generation produces a diff against the current codebase. Over 72 generations, diffs interacted unpredictably, code style drifted across models, and dead code accumulated.
+- **Path dependence.** The order of promotions mattered. The codebase became a product of its history, not its specification.
+- **Low viability rate.** 72 generations attempted, 1 promoted (1.4%). Only the most expensive model (Opus) succeeded. Cheaper models could not produce code that passed two-stage verification.
+- **Model capability bottleneck.** LLMs struggle with editing existing ClojureScript — they stumble over parentheses and produce subtle bugs in async code. The training data for Lisp dialects is thin.
+
+The core insight: evolve the specification (genotype), regenerate the entire codebase from scratch each generation (phenotype). No accumulated cruft. No path dependence. Every generation starts clean.
+
+## Goals
+
+- Produce a self-hosted Prime that can reproduce itself from its own spec (M1).
+- Define a manifest contract that decouples the Test Rig from the implementation language.
+- Build a mechanical Test Rig that verifies viability without any LLM involvement.
+- Record every generation attempt in an append-only audit trail.
+- Support multiple implementation languages — the spec MUST NOT prescribe a language.
+- Keep the Supervisor as minimal host-side infrastructure, not part of the organism.
+
+## Non-Goals
+
+- **Spec mutation.** Prime reads the spec, never modifies it. Spec evolution is M2+.
+- **Fitness ranking.** M1 is binary: viable or not. Fitness comparison between organisms is M2+.
+- **Human interaction via chat.** Prime does not expose a conversational interface in M1.
+- **Multi-Lab tournament selection.** One organism is generated and tested at a time.
+- **Distributed or cloud deployment.** M1 runs locally on a single host.
+- **Income generation or economic autonomy.** Out of scope entirely for M1.
+- **Crossover between specs.** Single-lineage reproduction only.
+
+## Design Principles
+
+### The spec is sacred
+
+Prime reads the spec. Prime MUST NOT modify the spec. The spec is the genome — it defines what Prime is. If the spec changes, it changes through an external process (human editing or future M2+ mutation), never through Prime's own initiative during M1.
+
+### Containers are the keep/revert boundary
+
+A generation lives or dies at the container level. Promote means merge the branch and tag it. Revert means destroy the container and discard the branch. There is no partial promotion, no rollback-after-promote. The decision is final and recorded. Containers are Docker containers — chosen for cross-platform compatibility (macOS and Linux).
+
+### Git is the version system
+
+Every generation attempt is a `gen-N` branch. Every promotion creates an annotated tag. History is immutable. Tags provide unlimited rollback depth. Git is chosen explicitly because it is universal, every implementation language has tooling for it, and LLMs understand git operations.
+
+### Reproduce first, improve later
+
+M1 is reproduction. The organism reads its spec and produces a viable offspring that can do the same. Self-modification, optimization, and selection come after reproduction is proven. Do not build M2 infrastructure during M1.
+
+### The environment judges, not the organism
+
+Viability is determined by the Test Rig (environment), not by Prime (organism). Prime MUST NOT self-assess viability. Prime requests verification and accepts the verdict. This prevents organisms from gaming their own fitness criteria.
+
+### Append-only audit trail
+
+Every generation attempt — successful or not — is recorded. Records are never overwritten, never deleted. The history is the ground truth for debugging, analysis, and future fitness evaluation.
+
+## Model
+
+The durable abstractions of the system. These terms are used consistently throughout the spec.
+
+- **Spec** — This document (or the Minimal Spec for operationality tests). The genome. Defines what Prime is. Input to code generation.
+- **Prime** — The organism. A running process that reads the spec, calls an LLM, produces code, and requests verification. Contains its own source code and spec.
+- **Artifact** — A directory containing everything needed to run Prime: source code, test suite, spec, and `manifest.json`. Produced by Prime during generation. Immutable once committed.
+- **Manifest** — `manifest.json` at the artifact root. The fixed-point contract between organism and environment. Describes how to build, test, and start the organism.
+- **Supervisor** — Host-side infrastructure. Manages container lifecycle, generation history, and promote/rollback operations. Not part of the organism.
+- **Test Rig** — A mechanical verification pipeline. Reads the manifest, builds the artifact, runs tests, starts Prime, health-checks it, writes a viability report. No LLM. No agentic loop.
+- **Generation** — One attempt to produce a viable organism. Each generation gets a number, a git branch (`gen-N`), and an audit record.
+- **Viability Report** — Structured JSON written by the Test Rig. Binary outcome: viable or non-viable. Read by the Supervisor and forwarded to Prime.
+- **Generation Record** — One entry per generation attempt in the append-only history. Records outcome, hashes, timing, and the viability report.
+- **Minimal Spec** — A small, self-contained specification used to test that a Prime is operational without requiring full self-reproduction. Produces a simple artifact (not another Prime). Used as the termination criterion for the M1 acceptance test.
+
+Relationships:
+
+- Prime reads the Spec and produces an Artifact.
+- The Artifact contains a Manifest.
+- The Supervisor spawns a container, mounts the Artifact, runs the Test Rig.
+- The Test Rig reads the Manifest, executes the pipeline, writes a Viability Report.
+- The Supervisor reads the Viability Report and returns it to Prime.
+- Prime tells the Supervisor to promote or rollback. The Supervisor records the outcome in a Generation Record.
+
+## Contracts and Schemas
+
+### Artifact Manifest (fixed-point contract)
+
+The manifest is the interface between organism and environment. It MUST NOT change across generations. Both the Test Rig and Prime conform to it.
+
+Every artifact MUST include a `manifest.json` at its root.
+
+**Schema:**
+
+```json
+{
+  "cambrian-version": 1,
+  "generation": 1,
+  "parent-generation": 0,
+  "spec-hash": "sha256:abc123...",
+  "artifact-hash": "sha256:def456...",
+  "producer-model": "claude-opus-4-6",
+  "token-usage": {"input": 45000, "output": 12000},
+  "files": [
+    "src/prime.py",
+    "src/api.py",
+    "tests/test_prime.py",
+    "manifest.json",
+    "spec/CAMBRIAN-SPEC-004.md"
+  ],
+  "created_at": "2026-03-21T14:30:00Z",
+  "entry": {
+    "build": "pip install -r requirements.txt",
+    "test": "python -m pytest tests/",
+    "start": "python src/prime.py",
+    "health": "http://localhost:8401/health"
+  }
+}
+```
+
+**Field rules:**
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `cambrian-version` | MUST | Integer. Currently `1`. |
+| `generation` | MUST | Integer >= 1. Monotonically increasing. |
+| `parent-generation` | MUST | Integer >= 0. `0` for bootstrap-produced artifacts. |
+| `spec-hash` | MUST | SHA-256 hex digest of the spec file used to generate this artifact. |
+| `artifact-hash` | MUST | SHA-256 hex digest of all artifact files except `manifest.json`. |
+| `producer-model` | MUST | LLM model identifier string. |
+| `token-usage` | MUST | Object with `input` and `output` integer fields. |
+| `files` | MUST | Array of all file paths in the artifact. MUST include `manifest.json` and the spec file. |
+| `created_at` | MUST | ISO-8601 timestamp. |
+| `entry.build` | MUST | Shell command to build/install. MUST exit 0 on success. |
+| `entry.test` | MUST | Shell command to run the test suite. MUST exit 0 on all-pass. |
+| `entry.start` | MUST | Shell command to start Prime as a long-running process. |
+| `entry.health` | MUST | URL. Test Rig sends GET; MUST return HTTP 200 when Prime is ready. |
+
+**Notes:**
+
+- `artifact-hash` excludes `manifest.json` to avoid circular hashing.
+- `entry` commands are executed by the Test Rig in a container with the artifact mounted at `/workspace`. The working directory is `/workspace`.
+- `entry.start` MUST start Prime in the foreground. The Test Rig manages the process lifecycle.
+
+### Viability Report
+
+Written by the Test Rig to `/workspace/viability-report.json`. Read by the Supervisor after the container exits.
+
+**Schema:**
+
+```json
+{
+  "generation": 1,
+  "status": "viable",
+  "failure_stage": "none",
+  "checks": {
+    "manifest": {"passed": true},
+    "build": {"passed": true, "duration_ms": 3200},
+    "test": {"passed": true, "tests_run": 15, "tests_passed": 15, "duration_ms": 8400},
+    "start": {"passed": true, "duration_ms": 1200},
+    "health": {"passed": true, "duration_ms": 50}
+  },
+  "completed_at": "2026-03-21T14:32:00Z"
+}
+```
+
+**Field rules:**
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer matching the artifact's generation. |
+| `status` | MUST | One of: `viable`, `non-viable`. |
+| `failure_stage` | MUST | One of: `none`, `manifest`, `build`, `test`, `start`, `health`. First stage that failed, or `none`. |
+| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` MUST include `tests_run` and `tests_passed`. |
+| `completed_at` | MUST | ISO-8601 timestamp. |
+
+**Notes:**
+
+- The Test Rig exits 0 if `status` is `viable`, exit 1 if `non-viable`.
+- Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempted. Their `passed` fields are set to `false` with `duration_ms: 0`.
+
+### Generation Record
+
+Maintained by the Supervisor in an append-only JSON file (`generations.json`).
+
+**Schema:**
+
+```json
+{
+  "generation": 1,
+  "parent": 0,
+  "spec-hash": "sha256:abc123...",
+  "artifact-hash": "sha256:def456...",
+  "outcome": "promoted",
+  "created": "2026-03-21T14:30:00Z",
+  "completed": "2026-03-21T14:32:30Z",
+  "container-id": "lab-gen-1",
+  "viability": {
+    "status": "viable",
+    "failure_stage": "none",
+    "checks": { "..." : "..." }
+  }
+}
+```
+
+**Field rules:**
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer >= 1. |
+| `parent` | MUST | Integer >= 0. |
+| `spec-hash` | MUST | SHA-256 hex digest. |
+| `artifact-hash` | MUST | SHA-256 hex digest. |
+| `outcome` | MUST | One of: `promoted`, `failed`, `timeout`, `in-progress`. |
+| `created` | MUST | ISO-8601 timestamp. |
+| `completed` | MAY | ISO-8601 timestamp. Absent while `in-progress`. |
+| `container-id` | MUST | String identifying the Test Rig container. |
+| `viability` | MAY | The full viability report. Absent while `in-progress`. |
+
+### Supervisor HTTP API
+
+**Direction:** Prime → Supervisor. The Supervisor runs on the host. Prime calls these endpoints.
+
+| Method | Path       | Request Body                          | Success Response                 | Error Response |
+|--------|------------|---------------------------------------|----------------------------------|----------------|
+| GET    | /          | —                                     | HTML dashboard                   | — |
+| GET    | /stats     | —                                     | `{"generation": 1, "status": "idle", "uptime": 3600}` | — |
+| GET    | /versions  | —                                     | `[Generation Record, ...]`       | — |
+| POST   | /spawn     | `{"spec-hash": "...", "generation": 1, "artifact-path": "/path"}` | `{"ok": true, "container-id": "lab-gen-1", "generation": 1}` | `{"ok": false, "error": "..."}` |
+| POST   | /promote   | `{"generation": 1}`                   | `{"ok": true, "generation": 1}`  | `{"ok": false, "error": "..."}` |
+| POST   | /rollback  | `{"generation": 1}`                   | `{"ok": true, "generation": 1}`  | `{"ok": false, "error": "..."}` |
+
+**Notes:**
+
+- `POST /spawn` is asynchronous. It creates the container with outbound network access, injects `ANTHROPIC_API_KEY` from the Supervisor's own environment, starts the Test Rig, and returns immediately. Prime polls `GET /stats` or waits for the generation to appear in `GET /versions` with a terminal `outcome`.
+- `POST /promote` MUST: merge `gen-N` to `main`, create annotated tag `gen-N`, delete the branch, update the generation record.
+- `POST /rollback` MUST: delete branch `gen-N`, update the generation record to `outcome: failed`.
+- All POST endpoints MUST return `{"ok": false, "error": "..."}` on failure, never throw.
+
+### Prime HTTP API
+
+**Direction:** Test Rig → Prime. The Test Rig calls these endpoints to verify Prime is alive.
+
+| Method | Path     | Success Response |
+|--------|----------|------------------|
+| GET    | /health  | `200 OK` (empty body or `{"ok": true}`) |
+| GET    | /stats   | `{"generation": 1, "status": "idle", "uptime": 120}` |
+
+**Notes:**
+
+- `/health` MUST return 200 with no preconditions. It is a liveness check.
+- `/stats` MUST return valid JSON. The `generation` field MUST match the artifact's generation number.
+
+## Lifecycle
+
+The generation lifecycle has four phases:
+
+```
+generate → verify → decide → record
+```
+
+### Generate
+
+Prime reads the spec and calls an LLM to produce a complete codebase.
+
+- **Consumes:** Spec file, generation history (previous generation records).
+- **Produces:** An Artifact directory with `manifest.json`, source code, tests, and the spec file. Committed to a `gen-N` git branch.
+- **Failure:** LLM returns unparseable output, or Prime cannot write files. Retryable.
+
+### Verify
+
+The Supervisor spawns a Test Rig container with the artifact mounted.
+
+- **Consumes:** Artifact directory at `/workspace`.
+- **Produces:** Viability Report at `/workspace/viability-report.json`.
+- **Failure:** Container fails to start, or Test Rig crashes before writing report. Non-retryable (counts as non-viable).
+
+### Decide
+
+Prime reads the viability report and tells the Supervisor to promote or rollback.
+
+- **Consumes:** Viability Report.
+- **Produces:** A promote or rollback request to the Supervisor.
+- **Failure:** Supervisor unreachable. Retryable with backoff.
+
+### Record
+
+The Supervisor executes the promote or rollback and writes the generation record.
+
+- **Consumes:** Promote or rollback request.
+- **Produces:** Updated generation history. On promote: merged branch, git tag. On rollback: discarded branch.
+- **Failure:** Git operation fails. Non-retryable (manual intervention required).
+
+## Failure Modes
+
+| Failure | Trigger | Response | Retryable |
+|---------|---------|----------|-----------|
+| Unparseable LLM output | LLM returns malformed or incomplete code | Record failed attempt. Retry with fresh LLM call, up to `CAMBRIAN_MAX_RETRIES` times. | Yes |
+| Build failure | `entry.build` exits non-zero | Test Rig records `failure_stage: build`, writes report, exits 1. Prime receives non-viable verdict. | Yes (new generation) |
+| Test failure | `entry.test` exits non-zero | Test Rig records `failure_stage: test`, writes report, exits 1. | Yes (new generation) |
+| Start timeout | Prime doesn't bind HTTP port within 30s | Test Rig records `failure_stage: start`, writes report, exits 1. | Yes (new generation) |
+| Health check failure | `GET /health` returns non-200 or times out | Test Rig records `failure_stage: health`, writes report, exits 1. | Yes (new generation) |
+| Supervisor unreachable | Network error on POST /spawn, /promote, /rollback | Exponential backoff (1s, 2s, 4s, 8s, 16s). Do not proceed without verification. | Yes |
+| LLM rate-limited | HTTP 429 from LLM API | Respect `retry-after` header. Pause and retry. | Yes |
+| All retries exhausted | `CAMBRIAN_MAX_RETRIES` reached for one generation | Record generation as failed. Stop. Do not modify the spec. | No |
+| Container crash | Test Rig container exits without writing report | Supervisor records `outcome: failed`. No viability report attached. | Yes (new generation) |
+
+Each retry is a separate generation record. Retries MUST NOT reuse previous LLM output — each is a fresh generation call.
+
+## Configuration
+
+All configuration is via environment variables. Precedence: env var > default.
+
+| Variable              | Required | Default          | Purpose |
+|-----------------------|----------|------------------|---------|
+| `ANTHROPIC_API_KEY`   | MUST     | —                | LLM API authentication |
+| `CAMBRIAN_MODEL`      | MAY      | *best available* | LLM model identifier for generation |
+| `CAMBRIAN_MAX_GENS`   | MAY      | `5`              | Maximum generation attempts before stopping |
+| `CAMBRIAN_MAX_RETRIES`| MAY      | `3`              | Maximum retries per generation on LLM output failure |
+| `CAMBRIAN_TOKEN_BUDGET` | MAY    | `0`              | Maximum cumulative tokens. `0` means unlimited. |
+| `CAMBRIAN_SUPERVISOR_URL` | MAY  | `http://localhost:8400` | Supervisor HTTP endpoint |
+| `CAMBRIAN_SPEC_PATH`  | MAY      | `./spec/CAMBRIAN-SPEC-004.md` | Path to the spec file |
+
+## Container Requirements
+
+Prime and all spawned containers (Test Rig, offspring) share the same container configuration requirements.
+
+### Networking
+
+All containers MUST have:
+- Outbound HTTPS access (port 443) to LLM API endpoints — required for code generation
+- HTTP access to the Supervisor on the host network (typically `http://host:8400`)
+- DNS resolution for API hostnames
+
+Without outbound network access, Prime cannot call an LLM and therefore cannot reproduce. The Supervisor is responsible for configuring container networking at spawn time. Lab containers (running the Test Rig or offspring Prime) inherit the same network configuration.
+
+### Credential Injection
+
+Offspring generations require API credentials to call an LLM. Credentials are an environment concern — the Supervisor injects them, the organism consumes them.
+
+Rules:
+- The Supervisor MUST pass `ANTHROPIC_API_KEY` to every spawned container via environment variables
+- Credentials MUST NOT be embedded in artifacts, committed to git, or written to `manifest.json`
+- The Supervisor reads credentials from its own environment and forwards them at container creation time
+- Prime reads `ANTHROPIC_API_KEY` from its environment; it MUST NOT attempt to discover, generate, or persist credentials
+
+### Workspace
+
+Every container mounts the artifact at `/workspace`:
+- `/workspace/manifest.json` — the fixed-point contract
+- `/workspace/spec/` — the spec file(s)
+- `/workspace/src/` — source code (layout varies by language)
+- `/workspace/tests/` — test suite
+
+The working directory for all `entry.*` commands is `/workspace`.
+
+## Minimal Spec (M1 operationality test)
+
+The Minimal Spec is a small specification used to verify that a reproduced Prime is operational — that it can read a spec, call an LLM, and produce viable code — without requiring full self-reproduction.
+
+This is the termination criterion for the M1 acceptance test. Gen-2 (the first self-hosted offspring) generates code from this spec instead of the full Prime spec.
+
+### Minimal Spec Content
+
+```
+Produce an HTTP server with the following behavior:
+
+- GET /health → 200 OK, body: {"ok": true}
+- GET /echo?msg=X → 200 OK, body: {"echo": "X"}
+- GET /echo with no msg parameter → 400, body: {"error": "missing msg parameter"}
+
+The server MUST:
+- Listen on port 8401
+- Respond with Content-Type: application/json
+- Include a test suite that verifies all three endpoints
+
+Produce a manifest.json conforming to the Cambrian artifact manifest contract.
+```
+
+### Why This Spec
+
+- **Small enough** to be cheap (few hundred tokens of LLM output)
+- **Exercises the full pipeline**: spec → LLM → code → build → test → start → health check
+- **Uses the same Test Rig**: the artifact includes a valid `manifest.json`, so the standard verification pipeline works unchanged
+- **Proves operationality**: Prime can read a spec, call an LLM, write files, create a manifest, and request verification
+- **Does not recurse**: the echo server is not a Prime, so the chain terminates
+
+## Examples
+
+### Example 1: Happy path — successful generation and promotion
+
+```
+1. Prime starts in container. Reads spec from /workspace/spec/CAMBRIAN-SPEC-004.md.
+2. Prime loads generation history from Supervisor (GET /versions → empty list).
+3. Prime calls LLM:
+   - System: "You are a code generator. Produce a complete, working codebase
+     from the following specification."
+   - User: [full spec content]
+4. LLM returns 8 files: src/prime.py, src/api.py, src/generate.py,
+   tests/test_api.py, tests/test_generate.py, requirements.txt,
+   manifest.json, spec/CAMBRIAN-SPEC-004.md.
+5. Prime writes files to /workspace/gen-1/.
+6. Prime computes spec-hash and artifact-hash, writes manifest.json.
+7. Prime commits to gen-1 branch: git checkout -b gen-1 && git add -A && git commit.
+8. Prime calls Supervisor: POST /spawn {"spec-hash": "sha256:abc...", "generation": 1,
+   "artifact-path": "/workspace/gen-1"}.
+9. Supervisor creates container, mounts artifact at /workspace, starts Test Rig.
+10. Test Rig:
+    - Reads manifest.json → entry.build = "pip install -r requirements.txt" → exit 0
+    - entry.test = "python -m pytest tests/" → 15 tests, 15 passed → exit 0
+    - entry.start = "python src/prime.py" → port 8401 bound in 1.2s
+    - GET http://localhost:8401/health → 200
+    - GET http://localhost:8401/stats → {"generation": 1, "status": "idle", "uptime": 2}
+    - Writes viability-report.json: status=viable
+    - Exits 0.
+11. Supervisor reads report, returns to Prime.
+12. Prime sees status=viable. Calls POST /promote {"generation": 1}.
+13. Supervisor: git merge gen-1, git tag -a gen-1, deletes branch, records outcome=promoted.
+```
+
+### Example 2: Build failure — non-viable, rollback, retry
+
+```
+1. Prime starts generation 2. Calls LLM.
+2. LLM produces code with a syntax error in src/api.py (missing import).
+3. Prime writes files, commits to gen-2 branch.
+4. Prime calls POST /spawn.
+5. Test Rig:
+   - Reads manifest.json
+   - entry.build = "pip install -r requirements.txt" → exit 0
+   - entry.test = "python -m pytest tests/" → ImportError in test_api.py → exit 1
+   - Records failure_stage=test, tests_run=15, tests_passed=8
+   - Writes viability-report.json: status=non-viable
+   - Exits 1.
+6. Supervisor reads report, returns to Prime.
+7. Prime sees status=non-viable. Calls POST /rollback {"generation": 2}.
+8. Supervisor: deletes gen-2 branch, records outcome=failed.
+9. Prime has retries remaining (CAMBRIAN_MAX_RETRIES=3, attempt 1 of 3).
+10. Prime calls LLM again with fresh prompt (includes gen-2 failure in history).
+11. LLM produces corrected code. Prime writes to gen-3 branch.
+12. Test Rig passes. Prime promotes gen-3.
+```
+
+### Example 3: M1 acceptance — Gen-2 runs the Minimal Spec
+
+```
+1. Gen-1 Prime (bootstrap-produced) is running. It has been promoted.
+2. Gen-1 reads the full spec, calls LLM, produces Gen-2 artifact.
+3. Gen-2 passes the Test Rig → promoted.
+4. Gen-2 Prime is started in a new container.
+   - Supervisor injects ANTHROPIC_API_KEY via env var.
+   - Container has outbound HTTPS access.
+5. Gen-2 is given the Minimal Spec (echo server) instead of the full Prime spec.
+6. Gen-2 calls LLM with the Minimal Spec.
+7. LLM returns: server.py, test_server.py, requirements.txt, manifest.json.
+8. Gen-2 writes files, computes hashes, commits to gen-3 branch.
+9. Gen-2 calls POST /spawn.
+10. Test Rig:
+    - entry.build = "pip install -r requirements.txt" → exit 0
+    - entry.test = "python -m pytest test_server.py" → 3 tests, 3 passed → exit 0
+    - entry.start = "python server.py" → port 8401 bound in 0.3s
+    - GET http://localhost:8401/health → 200, {"ok": true}
+    - Writes viability-report.json: status=viable
+    - Exits 0.
+11. Gen-2 promotes gen-3.
+12. M1 is complete: Gen-1 reproduced (Gen-2), Gen-2 is operational (produced
+    viable code from the Minimal Spec). The chain terminates.
+```
+
+## Implementation Phases
+
+### Phase 0: Supervisor and Test Rig
+
+Build the environment infrastructure. No Prime yet.
+
+**Adds:**
+- Supervisor HTTP server with `/spawn`, `/promote`, `/rollback`, `/stats`, `/versions` endpoints
+- Generation history file (`generations.json`), append-only
+- Test Rig script that reads `manifest.json` and executes the pipeline
+- Container lifecycle management (create, start, stop, destroy)
+- Container networking (outbound HTTPS for LLM API access)
+- Credential injection (`ANTHROPIC_API_KEY` forwarded to spawned containers)
+- Git operations (branch, merge, tag, delete)
+
+**Done when:** A hand-crafted artifact with a valid `manifest.json` can be spawned, tested, promoted, and rolled back through the Supervisor API. The Test Rig writes a correct viability report. Spawned containers have outbound HTTPS access and receive API credentials via environment variables.
+
+### Phase 1: Bootstrap Prime
+
+Generate the first Prime using Claude Code (interactive, one-time).
+
+**Adds:**
+- Prime source code generated from this spec
+- HTTP server with `/health` and `/stats`
+- Core loop: read spec → call LLM → write artifact → request verification → promote/rollback
+- Manifest generation (spec-hash, artifact-hash computation)
+- Generation history consumption (reads from Supervisor)
+
+**Done when:** The generated Prime starts, passes the Test Rig, and is promoted as gen-1.
+
+### Phase 2: Self-Hosting
+
+The promoted Prime reproduces itself and proves operationality.
+
+**Adds:** Nothing new — this phase validates that Phase 1 produced a Prime capable of reproduction.
+
+**Requires:**
+- Container networking (outbound HTTPS for LLM API calls)
+- Credential injection (Supervisor passes `ANTHROPIC_API_KEY` to spawned containers)
+
+**Done when:**
+1. Gen-1 Prime reads the full spec, calls an LLM, produces Gen-2.
+2. Gen-2 passes the Test Rig and is promoted.
+3. Gen-2 Prime is given the Minimal Spec (echo server).
+4. Gen-2 produces Gen-3 (echo server artifact) from the Minimal Spec.
+5. Gen-3 passes the Test Rig.
+
+This is the M1 acceptance criterion. The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
+
+## Validation
+
+### Mechanical checks (test suite)
+
+- `GET /health` returns 200
+- `GET /stats` returns valid JSON with `generation`, `status`, `uptime` fields
+- `manifest.json` conforms to schema: all MUST fields present, types correct
+- `manifest.json` `spec-hash` matches SHA-256 of the spec file on disk
+- `manifest.json` `artifact-hash` matches SHA-256 of all files except `manifest.json`
+- `POST /spawn` with valid artifact returns `{"ok": true, ...}`
+- `POST /spawn` with invalid artifact-path returns `{"ok": false, "error": "..."}`
+- `POST /promote` after viable generation merges branch and creates tag
+- `POST /rollback` after non-viable generation deletes branch
+- Generation history contains one record per attempt, outcomes correct
+- Test Rig writes valid `viability-report.json` for both viable and non-viable artifacts
+- Test Rig exits 0 for viable, 1 for non-viable
+- Test Rig fail-fast: if build fails, subsequent checks show `passed: false, duration_ms: 0`
+- Retry logic: failed generation triggers new LLM call, not reuse of old output
+- Retry limit: after `CAMBRIAN_MAX_RETRIES`, Prime stops and records failure
+
+### Behavioral checks (code review)
+
+- Error messages from Supervisor include enough context to diagnose the failure
+- LLM prompt includes the spec in full and generation history
+- Artifact directory is clean — no leftover files from previous generations
+- Git operations are atomic — no partial merges or orphaned branches
+- Config validation fails fast with an actionable error message if `ANTHROPIC_API_KEY` is missing
+- Prime does not self-assess viability — it always defers to the Test Rig verdict
+- Credentials are never written to artifacts, manifests, or git history
+- Spawned containers have outbound HTTPS access and receive `ANTHROPIC_API_KEY`
+
+### Reproductive check (M1 acceptance)
+
+```
+Bootstrap → Gen-1 (full Prime, full spec)
+Gen-1    → Gen-2 (full Prime, full spec)
+Gen-2    → Gen-3 (echo server, Minimal Spec)  ← chain terminates here
+```
+
+1. Gen-1 Prime (bootstrap-produced) passes the Test Rig
+2. Gen-1 Prime generates Gen-2 from the full spec
+3. Gen-2 passes the Test Rig — it is a fully functional Prime
+4. Gen-2 Prime generates Gen-3 from the **Minimal Spec** (echo server)
+5. Gen-3 passes the Test Rig — it is a viable echo server
+
+**Termination:** Gen-3 is not a Prime. It cannot reproduce. The chain stops. M1 is proven because:
+- Reproduction works (Gen-1 → Gen-2, both full Primes)
+- The reproduced Prime is operational (Gen-2 can read a spec, call an LLM, produce viable code)
+- The process terminates naturally (Minimal Spec produces a non-Prime artifact)
+
+## References
+
+- [CAMBRIAN-SPEC-003](CAMBRIAN-SPEC-003.md) — Previous iteration (style-guide rewrite)
+- [CAMBRIAN-SPEC-002](CAMBRIAN-SPEC-002.md) — First language-agnostic draft
+- [CAMBRIAN-SPEC-001](CAMBRIAN-SPEC-001.md) — Original spec carried from Loom (ClojureScript-specific, historical)
+- [Loom v0.2.0](https://github.com/lispmeister/loom) — Predecessor project, source-code-level evolution (archived)
+- [Loom final retrospective](https://github.com/lispmeister/loom/blob/master/architecture-reviews/review-2026-03-20-001.md) — Lessons learned from 72 generations of code-level evolution
+- [SPEC-STYLE-GUIDE](SPEC-STYLE-GUIDE.md) — Style guide used to write this spec
+
+---
+
+## Appendix: Environment vs. Genome
+
+This spec is structured as a single document following the standard spec style guide. However, the content serves two audiences:
+
+**Environment (Supervisor, Test Rig, Bootstrap):** Sections on contracts, lifecycle, configuration, and implementation phases define what the infrastructure does. This is built by humans (Phase 0) and persists across generations. The Supervisor and Test Rig are NOT part of the organism.
+
+**Genome (Prime):** The overview, model, contracts, lifecycle, and acceptance criteria together define what Prime is. An LLM reading these sections — particularly the model, contracts, Prime HTTP API, and the examples — produces a working Prime. The spec file is included in every artifact so the organism carries its own genome.
+
+**Fitness** is an environment concern, not part of the genome. For M1, fitness has two levels:
+1. **Viability** — binary. The Test Rig passes or it doesn't. Required for every generation.
+2. **Reproductive fitness** — can the organism reproduce? Gen-1 must produce a viable Gen-2 (full Prime). Gen-2 must produce a viable Gen-3 (Minimal Spec echo server). This is the M1 acceptance criterion.
+
+When selection *between* viable organisms becomes relevant (M2+), comparative fitness criteria will be defined in a separate environment spec — measured by the environment, not self-reported by the organism.
+
+---
+
+## Implementation Language
+
+**Environment (Supervisor, Test Rig):** Python. These are permanent infrastructure, not generated by an LLM. Python is chosen for simplicity — HTTP servers, subprocess management, and JSON handling require no dependencies beyond the standard library.
+
+**Organism (Prime):** Language-agnostic. The implementation language is not prescribed. We will evaluate candidates based on how well LLMs can generate correct, idiomatic code for the full Prime codebase in a single generation pass. Current candidate list: **Rust, Elixir, Python, Mojo**.
+
+**Containers:** Docker. Chosen for cross-platform compatibility (macOS and Linux).
+
+---
+
+```yaml
+spec-version: "004"
+organism: "cambrian"
+lineage: "genesis"
+parent-spec: "CAMBRIAN-SPEC-003"
+language: "TBD"
+```
+
+---
+
+*This spec is the genotype. The code an LLM generates from it is the phenotype.
+Different LLMs will produce different organisms. Natural selection begins at birth:
+if it doesn't pass its own acceptance criteria, it was never alive.*
