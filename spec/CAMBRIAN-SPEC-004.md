@@ -139,7 +139,16 @@ Every artifact MUST include a `manifest.json` at its root.
     "test": "python -m pytest tests/",
     "start": "python src/prime.py",
     "health": "http://localhost:8401/health"
-  }
+  },
+  "contracts": [
+    {
+      "name": "health-liveness",
+      "type": "http",
+      "method": "GET",
+      "path": "/health",
+      "expect": {"status": 200, "body": {"ok": true}}
+    }
+  ]
 }
 ```
 
@@ -160,6 +169,7 @@ Every artifact MUST include a `manifest.json` at its root.
 | `entry.test` | MUST | Shell command to run the test suite. MUST exit 0 on all-pass. |
 | `entry.start` | MUST | Shell command to start Prime as a long-running process. |
 | `entry.health` | MUST | URL. Test Rig sends GET; MUST return HTTP 200 when Prime is ready. |
+| `contracts` | MAY | Array of verification contract objects. If absent, Test Rig uses hard-coded health checks. If present, Test Rig evaluates each contract during health-check stage. See BOOTSTRAP-SPEC-002 §2.5 for contract schema and evaluation rules. |
 
 **Notes:**
 
@@ -172,6 +182,8 @@ Every artifact MUST include a `manifest.json` at its root.
 Written by the Test Rig to `/workspace/viability-report.json`. Read by the Supervisor after the container exits.
 
 **Schema:**
+
+**Viable example:**
 
 ```json
 {
@@ -189,6 +201,34 @@ Written by the Test Rig to `/workspace/viability-report.json`. Read by the Super
 }
 ```
 
+**Non-viable example (with diagnostics):**
+
+```json
+{
+  "generation": 2,
+  "status": "non-viable",
+  "failure_stage": "test",
+  "checks": {
+    "manifest": {"passed": true},
+    "build": {"passed": true, "duration_ms": 2800},
+    "test": {"passed": false, "tests_run": 15, "tests_passed": 8, "duration_ms": 6200},
+    "start": {"passed": false, "duration_ms": 0},
+    "health": {"passed": false, "duration_ms": 0}
+  },
+  "diagnostics": {
+    "stage": "test",
+    "summary": "7 of 15 tests failed",
+    "exit_code": 1,
+    "failures": [
+      {"test": "tests/test_api.py::test_spawn_returns_container_id", "error": "AssertionError: expected 'lab-gen-1', got None", "file": "tests/test_api.py", "line": 42}
+    ],
+    "stdout_tail": "...last 100 lines...",
+    "stderr_tail": "...last 100 lines..."
+  },
+  "completed_at": "2026-03-21T14:35:00Z"
+}
+```
+
 **Field rules:**
 
 | Field | Required | Rule |
@@ -196,13 +236,15 @@ Written by the Test Rig to `/workspace/viability-report.json`. Read by the Super
 | `generation` | MUST | Integer matching the artifact's generation. |
 | `status` | MUST | One of: `viable`, `non-viable`. |
 | `failure_stage` | MUST | One of: `none`, `manifest`, `build`, `test`, `start`, `health`. First stage that failed, or `none`. |
-| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` MUST include `tests_run` and `tests_passed`. |
+| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` MUST include `tests_run` and `tests_passed`. `health` MAY include a `contracts` sub-object with per-contract results when manifest contracts are present. |
 | `completed_at` | MUST | ISO-8601 timestamp. |
+| `diagnostics` | MAY | Object. Present when `status` is `non-viable`. Contains structured failure context for the failed stage: `stage`, `summary`, `exit_code`, `failures[]`, `stdout_tail`, `stderr_tail`. See BOOTSTRAP-SPEC-002 §2.6 for full schema and per-stage formats. |
 
 **Notes:**
 
 - The Test Rig exits 0 if `status` is `viable`, exit 1 if `non-viable`.
 - Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempted. Their `passed` fields are set to `false` with `duration_ms: 0`.
+- `diagnostics` is absent when `status` is `viable`. Existing report consumers that do not expect `diagnostics` are unaffected.
 
 ### Generation Record
 
@@ -217,6 +259,7 @@ Maintained by the Supervisor in an append-only JSON file (`generations.json`).
   "spec-hash": "sha256:abc123...",
   "artifact-hash": "sha256:def456...",
   "outcome": "promoted",
+  "artifact_ref": "gen-1",
   "created": "2026-03-21T14:30:00Z",
   "completed": "2026-03-21T14:32:30Z",
   "container-id": "lab-gen-1",
@@ -237,10 +280,11 @@ Maintained by the Supervisor in an append-only JSON file (`generations.json`).
 | `spec-hash` | MUST | SHA-256 hex digest. |
 | `artifact-hash` | MUST | SHA-256 hex digest. |
 | `outcome` | MUST | One of: `promoted`, `failed`, `timeout`, `in-progress`. |
+| `artifact_ref` | MAY | String. Git ref (tag) pointing to the artifact source tree. `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in-progress`. See BOOTSTRAP-SPEC-002 §2.7 for naming convention and retry suffixes. |
 | `created` | MUST | ISO-8601 timestamp. |
 | `completed` | MAY | ISO-8601 timestamp. Absent while `in-progress`. |
 | `container-id` | MUST | String identifying the Test Rig container. |
-| `viability` | MAY | The full viability report. Absent while `in-progress`. |
+| `viability` | MAY | The full viability report (including diagnostics when non-viable). Absent while `in-progress`. |
 
 ### Supervisor HTTP API
 
@@ -259,7 +303,7 @@ Maintained by the Supervisor in an append-only JSON file (`generations.json`).
 
 - `POST /spawn` is asynchronous. It creates the container with outbound network access, injects `ANTHROPIC_API_KEY` from the Supervisor's own environment, starts the Test Rig, and returns immediately. Prime polls `GET /stats` or waits for the generation to appear in `GET /versions` with a terminal `outcome`.
 - `POST /promote` MUST: merge `gen-N` to `main`, create annotated tag `gen-N`, delete the branch, update the generation record.
-- `POST /rollback` MUST: delete branch `gen-N`, update the generation record to `outcome: failed`.
+- `POST /rollback` MUST: create annotated tag `gen-N-failed` (preserving the failed artifact for informed retry), delete branch `gen-N`, update the generation record to `outcome: failed` with `artifact_ref: "gen-N-failed"`.
 - All POST endpoints MUST return `{"ok": false, "error": "..."}` on failure, never throw.
 
 ### Prime HTTP API
@@ -330,7 +374,7 @@ The Supervisor executes the promote or rollback and writes the generation record
 | All retries exhausted | `CAMBRIAN_MAX_RETRIES` reached for one generation | Record generation as failed. Stop. Do not modify the spec. | No |
 | Container crash | Test Rig container exits without writing report | Supervisor records `outcome: failed`. No viability report attached. | Yes (new generation) |
 
-Each retry is a separate generation record. Retries MUST NOT reuse previous LLM output — each is a fresh generation call.
+Each retry is a separate generation record. Retries MUST NOT reuse previous LLM output — each is a fresh generation call. Retries SHOULD be informed: Prime reads the failed artifact's source code (via `artifact_ref` in the generation record) and structured diagnostics to construct a targeted LLM prompt. The LLM still produces a complete codebase (not a patch), preserving the clean-regeneration property. See BOOTSTRAP-SPEC-002 §2.7 for the informed retry data flow.
 
 ## Configuration
 
