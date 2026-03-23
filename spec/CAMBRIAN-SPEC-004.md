@@ -246,6 +246,68 @@ Written by the Test Rig to `/workspace/viability-report.json`. Read by the Super
 - Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempted. Their `passed` fields are set to `false` with `duration_ms: 0`.
 - `diagnostics` is absent when `status` is `viable`. Existing report consumers that do not expect `diagnostics` are unaffected.
 
+### Fitness Vector
+
+The viability report SHOULD include a `fitness` object — a quantitative characterization of the artifact, computed by the Test Rig from data it already collects. Fitness is present for both viable and non-viable reports (non-viable reports include partial metrics up to the failed stage).
+
+For M1, fitness is informational only — viability remains binary. For M2+, the fitness vector provides the measurement apparatus for selection between viable organisms.
+
+**Schema:**
+
+```json
+{
+  "fitness": {
+    "build_duration_ms": 3200,
+    "test_duration_ms": 8400,
+    "test_count": 15,
+    "test_pass_rate": 1.0,
+    "start_duration_ms": 1200,
+    "health_duration_ms": 50,
+    "total_duration_ms": 12850,
+    "source_files": 5,
+    "source_lines": 342,
+    "test_files": 2,
+    "test_lines": 187,
+    "dependency_count": 3,
+    "token_input": 45000,
+    "token_output": 12000
+  }
+}
+```
+
+**Field rules:**
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `fitness` | SHOULD | Object. Present in all viability reports. Partial when non-viable (only metrics from completed stages). |
+| `fitness.build_duration_ms` | SHOULD | Integer. Time to execute `entry.build`. From `checks.build.duration_ms`. |
+| `fitness.test_duration_ms` | SHOULD | Integer. Time to execute `entry.test`. From `checks.test.duration_ms`. |
+| `fitness.test_count` | SHOULD | Integer. Number of tests run. From `checks.test.tests_run`. |
+| `fitness.test_pass_rate` | SHOULD | Float 0.0–1.0. `tests_passed / tests_run`. |
+| `fitness.start_duration_ms` | SHOULD | Integer. Time for Prime to bind HTTP port. From `checks.start.duration_ms`. |
+| `fitness.health_duration_ms` | SHOULD | Integer. Time for health check to succeed. From `checks.health.duration_ms`. |
+| `fitness.total_duration_ms` | SHOULD | Integer. Sum of all stage durations. Wall-clock time from pipeline start to report. |
+| `fitness.source_files` | SHOULD | Integer. Count of non-test, non-manifest files in the manifest's `files` array. |
+| `fitness.source_lines` | SHOULD | Integer. Total line count of source files. |
+| `fitness.test_files` | SHOULD | Integer. Count of test files (matching `test*` or `*test*` patterns in `files`). |
+| `fitness.test_lines` | SHOULD | Integer. Total line count of test files. |
+| `fitness.dependency_count` | SHOULD | Integer. Number of dependencies in `requirements.txt` (or equivalent). `0` for stdlib-only artifacts. |
+| `fitness.token_input` | SHOULD | Integer. From manifest's `token-usage.input`. |
+| `fitness.token_output` | SHOULD | Integer. From manifest's `token-usage.output`. |
+
+**Data sources:** All fitness metrics are computed by the Test Rig from two sources: (1) the viability report's own `checks` data (durations, test counts), and (2) the manifest (file list, token usage). No additional test execution is needed — fitness extraction is a post-processing step after all pipeline stages complete.
+
+**Fitness dimensions:**
+
+- **Speed** — `build_duration_ms`, `test_duration_ms`, `start_duration_ms`, `health_duration_ms`, `total_duration_ms`. Faster organisms are more efficient to verify.
+- **Correctness** — `test_count`, `test_pass_rate`. More tests with higher pass rates indicate more thorough self-verification.
+- **Economy** — `token_input`, `token_output`, `source_lines`, `dependency_count`. Organisms that achieve viability with fewer tokens and less code are cheaper to reproduce.
+- **Robustness** — `test_files`, `test_lines`, test-to-source ratio (`test_lines / source_lines`). Higher testing density correlates with fewer latent bugs.
+
+**M1 usage:** Fitness data is stored in every generation record. Humans can query `GET /versions` and compare fitness across generations. No automated selection occurs.
+
+**M2+ usage:** Selection policies will consume the fitness vector to choose between viable organisms. The specific selection criteria (e.g., minimize `total_duration_ms`, maximize `test_count`, Pareto-optimal across dimensions) are deferred to a future environment spec. The measurement apparatus is defined here so that historical data exists from Gen-1 onward.
+
 ### Generation Record
 
 Maintained by the Supervisor in an append-only JSON file (`generations.json`).
@@ -507,10 +569,13 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
    - Exits 1.
 6. Supervisor reads report, returns to Prime.
 7. Prime sees status=non-viable. Calls POST /rollback {"generation": 2}.
-8. Supervisor: deletes gen-2 branch, records outcome=failed.
+8. Supervisor: tags gen-2-failed, deletes gen-2 branch, records outcome=failed
+   with artifact_ref="gen-2-failed".
 9. Prime has retries remaining (CAMBRIAN_MAX_RETRIES=3, attempt 1 of 3).
-10. Prime calls LLM again with fresh prompt (includes gen-2 failure in history).
-11. LLM produces corrected code. Prime writes to gen-3 branch.
+10. Prime reads failed source code from gen-2-failed tag and diagnostics from
+    generation record. Constructs informed retry prompt with spec + failed code
+    + structured diagnostics.
+11. LLM produces corrected complete codebase. Prime writes to gen-3 branch.
 12. Test Rig passes. Prime promotes gen-3.
 ```
 

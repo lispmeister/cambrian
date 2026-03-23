@@ -329,6 +329,7 @@ Stage 5 — Health Check:
 
 Report:
   - Write /workspace/viability-report.json per CAMBRIAN-SPEC-004 schema
+  - Compute fitness vector from checks data + manifest (see §2.8)
   - If any stage failed, include a diagnostics object (see §2.6)
   - Exit 0 if all stages passed (status=viable)
   - Exit 1 if any stage failed (status=non-viable)
@@ -662,6 +663,43 @@ The LLM prompt structure is Prime's concern (defined in CAMBRIAN-SPEC-005), but 
 #### Cleanup
 
 Failed-generation tags accumulate over time. For M1, this is not a concern — tag storage is negligible. For M2+, the Supervisor MAY implement a retention policy (e.g., keep only the last N failed tags per generation lineage). This is explicitly deferred — premature cleanup risks losing debugging context.
+
+### 2.8 Fitness Vector
+
+The Test Rig SHOULD compute a `fitness` object and include it in every viability report. The fitness vector is a quantitative characterization of the artifact — how fast, how correct, how economical, how robust. For M1, fitness is informational. For M2+, it provides the measurement apparatus for selection between viable organisms.
+
+**Why this matters:** Viability is binary — an organism passes or it doesn't. But not all viable organisms are equal. A Prime that builds in 2 seconds, has 20 tests, and uses 10K tokens is fitter than one that builds in 30 seconds, has 3 tests, and uses 100K tokens. Without quantitative fitness data, M2 selection has nothing to work with. By collecting fitness from Gen-1 onward, the system has a historical fitness record from day one — no retrofitting required.
+
+**Data sources:** The fitness vector is computed entirely from data the Test Rig already collects. No additional test execution is needed.
+
+| Metric | Source | Computation |
+|--------|--------|-------------|
+| `build_duration_ms` | `checks.build.duration_ms` | Direct copy |
+| `test_duration_ms` | `checks.test.duration_ms` | Direct copy |
+| `test_count` | `checks.test.tests_run` | Direct copy |
+| `test_pass_rate` | `checks.test` | `tests_passed / tests_run` |
+| `start_duration_ms` | `checks.start.duration_ms` | Direct copy |
+| `health_duration_ms` | `checks.health.duration_ms` | Direct copy |
+| `total_duration_ms` | All checks | Sum of all stage durations |
+| `source_files` | `manifest.files` | Count files NOT matching `test*` or `*_test*` patterns, excluding `manifest.json` |
+| `source_lines` | File system | `wc -l` on each source file in `/workspace` |
+| `test_files` | `manifest.files` | Count files matching `test*` or `*_test*` patterns |
+| `test_lines` | File system | `wc -l` on each test file in `/workspace` |
+| `dependency_count` | `/workspace/requirements.txt` | Count non-empty, non-comment lines. `0` if file is empty or absent. |
+| `token_input` | `manifest.token-usage.input` | Direct copy |
+| `token_output` | `manifest.token-usage.output` | Direct copy |
+
+**Implementation:** Fitness computation is a post-processing step in the Report phase, after all pipeline stages have completed (or failed). The Test Rig:
+
+1. Reads completed `checks` data (durations, test counts)
+2. Reads the manifest (`files` array, `token-usage`)
+3. Counts lines in source and test files via the filesystem
+4. Assembles the `fitness` object
+5. Includes it in the viability report
+
+For non-viable reports, fitness includes partial metrics from completed stages. Metrics from unattempted stages (due to fail-fast) are absent from the fitness object.
+
+**Line counting:** The Test Rig counts lines using a simple newline count (`\n`). Binary files are skipped (files that contain null bytes in their first 8KB). This is a rough metric — it measures volume, not complexity — but it's cheap, deterministic, and sufficient for cross-generation comparison.
 
 ## 3. Docker Infrastructure
 
@@ -1084,6 +1122,12 @@ All configuration is via environment variables on the host.
 - Generation records include `artifact_ref` pointing to the failed tag
 - Prime can read failed source code via `git show <artifact_ref>:<file>`
 - Retry with suffix tags works (`gen-N-failed-2`, `gen-N-failed-3`)
+- Viable viability reports include `fitness` object with all metrics
+- Non-viable viability reports include `fitness` with partial metrics (completed stages only)
+- `fitness.test_pass_rate` equals `tests_passed / tests_run` from checks
+- `fitness.source_files` + `fitness.test_files` <= total files in manifest (excluding manifest.json)
+- `fitness.total_duration_ms` equals sum of individual stage durations
+- Fitness data is preserved in generation records via `GET /versions`
 
 ### Behavioral checks (code review)
 
@@ -1098,6 +1142,7 @@ All configuration is via environment variables on the host.
 - Pytest failure extraction handles edge cases gracefully (crash before tests, non-pytest runners)
 - Informed retry produces a complete artifact, not a patch — no path dependence
 - Failed artifact tags are never deleted during M1 (debugging context preserved)
+- Fitness metrics are consistent across runs for the same artifact (deterministic)
 - `ruff check` and `ruff format --check` pass with zero errors
 - `pyright` in strict mode passes with zero errors
 - All async tests run via `pytest-asyncio` without event loop warnings

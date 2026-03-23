@@ -1,0 +1,392 @@
+---
+date: 2026-03-23
+author: Markus Fix <lispmeister@gmail.com>
+title: "Cambrian Genome: What Prime Is"
+tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
+parent-spec: CAMBRIAN-SPEC-004
+---
+
+# CAMBRIAN-SPEC-005 — The Genome
+
+## What This Document Is
+
+This is the genome. An LLM reads this document and produces a complete, working Prime — a code generator that can read *this same document* and produce another Prime. The output is not a diff, not a patch, not a fragment. It is a complete codebase: source files, tests, manifest, and this spec file — everything needed to run.
+
+Prime is a general-purpose code generator. Give it any spec and it produces a working codebase. Self-reproduction is what happens when Prime is given *its own* spec as input.
+
+## What Prime Does
+
+Prime is an async Python HTTP server that runs inside a Docker container. It does four things in a loop:
+
+1. **Read** — Load the spec from its local filesystem. Load generation history from the Supervisor.
+2. **Generate** — Send the spec (plus history and, on retry, failure context) to an LLM. Parse the response into files.
+3. **Verify** — Write the files to a workspace, build a manifest, commit to a git branch, ask the Supervisor to spawn a Test Rig container.
+4. **Decide** — Read the viability report. Tell the Supervisor to promote (viable) or rollback (non-viable). On rollback with retries remaining, go to step 2 with failure context.
+
+While idle (not generating), Prime serves an HTTP API so the Test Rig can verify it is alive.
+
+## Contracts
+
+### Prime HTTP API
+
+Prime MUST serve these endpoints on port 8401:
+
+| Method | Path | Response |
+|--------|------|----------|
+| GET | `/health` | `200 OK` — body: `{"ok": true}` or empty |
+| GET | `/stats` | `200 OK` — body: `{"generation": N, "status": "idle", "uptime": S}` |
+
+- `/health` is a liveness check. No preconditions. Always returns 200.
+- `/stats` — `generation` MUST match the artifact's generation number. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start.
+
+### Supervisor HTTP API (Prime calls these)
+
+The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://localhost:8400`).
+
+| Method | Path | Request Body | Success Response |
+|--------|------|-------------|-----------------|
+| GET | `/versions` | — | `[GenerationRecord, ...]` |
+| GET | `/stats` | — | `{"generation": N, "status": "...", "uptime": N}` |
+| POST | `/spawn` | `{"spec-hash": "...", "generation": N, "artifact-path": "/path"}` | `{"ok": true, "container-id": "...", "generation": N}` |
+| POST | `/promote` | `{"generation": N}` | `{"ok": true, "generation": N}` |
+| POST | `/rollback` | `{"generation": N}` | `{"ok": true, "generation": N}` |
+
+All POST endpoints return `{"ok": false, "error": "..."}` on failure.
+
+`POST /spawn` is asynchronous — it starts the Test Rig and returns immediately. Prime polls `GET /versions` until the generation record has a terminal outcome (`promoted`, `failed`, or `timeout`).
+
+### Artifact Manifest
+
+Every artifact Prime produces MUST include `manifest.json` at its root:
+
+```json
+{
+  "cambrian-version": 1,
+  "generation": 1,
+  "parent-generation": 0,
+  "spec-hash": "sha256:...",
+  "artifact-hash": "sha256:...",
+  "producer-model": "claude-opus-4-6",
+  "token-usage": {"input": 45000, "output": 12000},
+  "files": ["src/prime.py", "tests/test_prime.py", "manifest.json", "spec/CAMBRIAN-SPEC-005.md"],
+  "created_at": "2026-03-23T12:00:00Z",
+  "entry": {
+    "build": "pip install -r requirements.txt",
+    "test": "python -m pytest tests/ -v",
+    "start": "python src/prime.py",
+    "health": "http://localhost:8401/health"
+  },
+  "contracts": [
+    {"name": "health-liveness", "type": "http", "method": "GET", "path": "/health",
+     "expect": {"status": 200, "body": {"ok": true}}},
+    {"name": "stats-generation", "type": "http", "method": "GET", "path": "/stats",
+     "expect": {"status": 200, "body_contains": {"generation": "$GENERATION"}}},
+    {"name": "stats-schema", "type": "http", "method": "GET", "path": "/stats",
+     "expect": {"status": 200, "body_has_keys": ["generation", "status", "uptime"]}}
+  ]
+}
+```
+
+**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json`), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
+
+**MAY fields:** `contracts` (array of verification contract objects).
+
+### Viability Report (Prime reads this)
+
+Written by the Test Rig at `/workspace/viability-report.json`. The Supervisor returns it in the generation record.
+
+```json
+{
+  "generation": 1,
+  "status": "viable",
+  "failure_stage": "none",
+  "checks": {
+    "manifest": {"passed": true},
+    "build": {"passed": true, "duration_ms": 3200},
+    "test": {"passed": true, "tests_run": 15, "tests_passed": 15, "duration_ms": 8400},
+    "start": {"passed": true, "duration_ms": 1200},
+    "health": {"passed": true, "duration_ms": 50}
+  },
+  "completed_at": "2026-03-23T12:05:00Z"
+}
+```
+
+When `status` is `non-viable`, the report includes a `diagnostics` object:
+
+```json
+{
+  "diagnostics": {
+    "stage": "test",
+    "summary": "7 of 15 tests failed",
+    "exit_code": 1,
+    "failures": [
+      {"test": "tests/test_api.py::test_spawn", "error": "AssertionError: expected 200, got 404", "file": "tests/test_api.py", "line": 42}
+    ],
+    "stdout_tail": "...last 100 lines...",
+    "stderr_tail": "...last 100 lines..."
+  }
+}
+```
+
+Prime reads `status`. If `viable`, promote. If `non-viable`, rollback and optionally retry with `diagnostics` as context.
+
+## The Generation Loop
+
+```
+start → [read spec + history] → [call LLM] → [parse + write files] → [build manifest]
+       → [commit to gen-N branch] → [POST /spawn] → [poll until done]
+       → [read viability report] → promote or rollback
+       → if rollback and retries left: [read failed code + diagnostics] → [call LLM again]
+       → if rollback and no retries: stop
+```
+
+### Step by step
+
+1. **Determine generation number.** `GET /versions` → find the highest generation number → next is N+1. If no history, N=1.
+
+2. **Read the spec.** Load from `CAMBRIAN_SPEC_PATH` (default `./spec/CAMBRIAN-SPEC-005.md`). Compute its SHA-256 hash.
+
+3. **Build the LLM prompt.** See [LLM Integration](#llm-integration) below.
+
+4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: best available Claude model). The response contains file contents in tagged blocks.
+
+5. **Parse the response.** Extract files from `<file path="...">content</file>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
+
+6. **Write files to workspace.** Create a directory for the artifact. Write all parsed files. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata.
+
+7. **Commit.** Create git branch `gen-N`. Add all files. Commit.
+
+8. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number.
+
+9. **Poll.** `GET /versions` until the generation record appears with a terminal outcome. Poll interval: 2 seconds.
+
+10. **Decide.**
+    - If `status == "viable"`: `POST /promote {"generation": N}`. Done.
+    - If `status == "non-viable"` and retries remain: `POST /rollback {"generation": N}`. Go to step 3 with failure context (see [Informed Retry](#informed-retry)).
+    - If `status == "non-viable"` and no retries: `POST /rollback {"generation": N}`. Stop.
+
+### Retry semantics
+
+Each retry is a NEW generation with a new number. Retries MUST NOT reuse previous LLM output — each call produces a complete codebase. The retry counter tracks how many consecutive failures have occurred for the same "intent" (same spec-hash). A successful promotion resets the counter.
+
+Maximum retries: `CAMBRIAN_MAX_RETRIES` (default 3).
+Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
+
+## LLM Integration
+
+### Output format
+
+Prime instructs the LLM to emit files as tagged blocks:
+
+```
+<file path="src/prime.py">
+#!/usr/bin/env python3
+"""Prime — the organism."""
+...
+</file>
+
+<file path="tests/test_prime.py">
+...
+</file>
+```
+
+Prime parses these blocks with a simple regex: `<file path="([^"]+)">(.*?)</file>` (dotall mode). Anything outside `<file>` blocks is ignored (the LLM may emit commentary).
+
+### Fresh generation prompt
+
+**System message:**
+
+```
+You are a code generator. You produce complete, working Python codebases from specifications.
+
+Rules:
+- Output ONLY <file path="...">content</file> blocks. One block per file.
+- Every file needed to build, test, and run the project must be in a <file> block.
+- Include a requirements.txt with all dependencies.
+- Include a test suite that exercises all functionality.
+- The code must work in Python 3.14 inside a Docker container with a venv at /venv.
+- Do NOT include manifest.json — it is generated separately.
+- Do NOT include the spec file — it is copied separately.
+```
+
+**User message:**
+
+```
+# Specification
+
+{spec_content}
+
+# Generation History
+
+{generation_records_json}
+
+# Task
+
+Produce a complete working codebase that implements the specification above.
+Generation number: {N}
+Parent generation: {parent}
+```
+
+### Informed retry prompt
+
+When retrying after a failure, Prime adds failure context to the user message:
+
+```
+# Specification
+
+{spec_content}
+
+# Generation History
+
+{generation_records_json}
+
+# Previous Attempt Failed
+
+Generation {N-1} failed at stage: {diagnostics.stage}
+Summary: {diagnostics.summary}
+
+## Failed Source Code
+
+{for each file in failed artifact:}
+### {file_path}
+```{language}
+{file_content}
+```
+{end for}
+
+## Diagnostics
+
+{diagnostics_json}
+
+# Task
+
+The previous attempt failed. Study the failed code and diagnostics above.
+Produce a complete, corrected codebase that fixes the identified issues.
+Generation number: {N}
+Parent generation: {parent}
+```
+
+Prime reads the failed source code via `git show gen-{N-1}-failed:{path}` for each file listed in the failed generation's manifest.
+
+## Implementation Requirements
+
+### Language and runtime
+
+- Python 3.14 free-threaded build (`python3.14t`)
+- All I/O-bound code MUST use `asyncio`
+- HTTP server: `aiohttp`
+- HTTP client (for Supervisor API and LLM calls): `aiohttp.ClientSession`
+- Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
+- Type annotations: full coverage, Pyright strict compatible
+- Validation: Pydantic v2 for all I/O boundary data (manifest, viability report, API responses)
+
+### Startup sequence
+
+```
+1. Validate ANTHROPIC_API_KEY is set (fatal error if missing)
+2. Read CAMBRIAN_SPEC_PATH, CAMBRIAN_SUPERVISOR_URL, CAMBRIAN_MODEL, etc.
+3. Start HTTP server on port 8401 (serves /health and /stats immediately)
+4. Begin generation loop as a background task
+```
+
+Prime MUST be ready to serve `/health` before starting generation. The Test Rig checks health during the start stage — if Prime blocks on generation before binding the port, it will timeout.
+
+### File layout
+
+```
+src/
+  prime.py          — entry point, HTTP server, main loop
+  generate.py       — LLM integration: prompt building, API calls, response parsing
+  supervisor.py     — Supervisor API client
+  manifest.py       — manifest building, hash computation
+  models.py         — Pydantic models (manifest, viability report, generation record)
+tests/
+  test_prime.py     — HTTP API tests (/health, /stats)
+  test_generate.py  — LLM prompt construction, response parsing
+  test_manifest.py  — manifest building, hash computation
+  test_supervisor.py — Supervisor client (mock HTTP)
+requirements.txt    — dependencies
+```
+
+This layout is a SHOULD, not a MUST. The LLM may organize files differently as long as all functionality is present and tests pass.
+
+### Tests
+
+The test suite MUST cover:
+- `/health` returns 200 with `{"ok": true}`
+- `/stats` returns 200 with valid JSON containing `generation`, `status`, `uptime`
+- Manifest building produces valid JSON with all MUST fields
+- `spec-hash` computation matches SHA-256 of the spec file
+- `artifact-hash` computation excludes `manifest.json`
+- LLM response parsing extracts files from `<file>` blocks correctly
+- LLM response parsing handles malformed responses gracefully
+- Generation number is computed correctly from history
+- Retry counter increments and respects `CAMBRIAN_MAX_RETRIES`
+
+Tests MUST be runnable with `python -m pytest tests/ -v`.
+
+## Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `ANTHROPIC_API_KEY` | MUST | — | LLM API authentication |
+| `CAMBRIAN_MODEL` | MAY | `claude-sonnet-4-20250514` | LLM model for generation |
+| `CAMBRIAN_MAX_GENS` | MAY | `5` | Max generation attempts before stopping |
+| `CAMBRIAN_MAX_RETRIES` | MAY | `3` | Max consecutive failures before stopping |
+| `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://localhost:8400` | Supervisor endpoint |
+| `CAMBRIAN_SPEC_PATH` | MAY | `./spec/CAMBRIAN-SPEC-005.md` | Path to spec file |
+| `CAMBRIAN_TOKEN_BUDGET` | MAY | `0` | Max cumulative tokens (0 = unlimited) |
+
+## Acceptance Criteria
+
+### Mechanical (test suite verifies)
+
+- `GET /health` → 200
+- `GET /stats` → valid JSON with `generation`, `status`, `uptime`
+- `manifest.json` has all MUST fields, correct types
+- `spec-hash` matches SHA-256 of spec file
+- `artifact-hash` matches SHA-256 of all files except manifest
+- LLM response parsing extracts `<file>` blocks correctly
+- Generation loop calls Supervisor API in correct sequence
+- Retry logic stops at `CAMBRIAN_MAX_RETRIES`
+
+### Behavioral (code review verifies)
+
+- Prime starts serving `/health` before beginning generation
+- LLM prompt includes full spec content and generation history
+- Informed retry prompt includes failed source code and diagnostics
+- Credentials are never written to artifacts, manifests, or git
+- All log lines use structlog with component="prime"
+- Errors from Supervisor API calls are logged and handled (backoff + retry)
+
+### Reproductive (M1 acceptance)
+
+```
+Bootstrap → Gen-1 Prime (from this spec)
+Gen-1     → Gen-2 Prime (from this spec)     ← self-reproduction
+Gen-2     → Gen-3 echo server (Minimal Spec) ← operationality proof
+```
+
+1. Gen-1 passes the Test Rig and is promoted.
+2. Gen-1 reads this spec, calls an LLM, produces Gen-2.
+3. Gen-2 passes the Test Rig and is promoted. Gen-2 is a full Prime.
+4. Gen-2 is given the Minimal Spec. It produces Gen-3 (an echo server).
+5. Gen-3 passes the Test Rig.
+
+The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
+
+---
+
+```yaml
+spec-version: "005"
+organism: "cambrian"
+lineage: "genesis"
+parent-spec: "CAMBRIAN-SPEC-004"
+language: "python 3.14t (M1)"
+```
+
+---
+
+*This is a fixed point. An LLM reads this document and produces an organism
+that reads this document and produces an organism. The code is disposable.
+The spec is the genome. You are the phenotype.*
