@@ -8,7 +8,7 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 ## Status
 
-**Design phase — no running code yet.** The system spec is at [CAMBRIAN-SPEC-004](spec/CAMBRIAN-SPEC-004.md), the bootstrap plan at [BOOTSTRAP-SPEC-001](spec/BOOTSTRAP-SPEC-001.md). Next step: build the Supervisor and Test Rig, then generate Gen-1 Prime.
+**Design phase — no running code yet.** All specs are complete. Next step: build the Supervisor and Test Rig (Phase 0), then generate Gen-1 Prime from the genome spec.
 
 ## The Idea
 
@@ -60,7 +60,9 @@ Everything is Python 3.14t (free-threaded, GIL disabled) for M1.
 ```
 spec/
   CAMBRIAN-SPEC-004.md     — System spec (contracts, schemas, lifecycle)
-  BOOTSTRAP-SPEC-001.md    — Bootstrap spec (Supervisor, Test Rig, Docker)
+  CAMBRIAN-SPEC-005.md     — Genome spec (what Prime is — consumed by LLM)
+  BOOTSTRAP-SPEC-002.md    — Bootstrap spec (Supervisor, Test Rig, Docker)
+  BOOTSTRAP-SPEC-001.md    — Bootstrap spec v1 (superseded by 002)
   SPEC-STYLE-GUIDE.md      — How to write specs
   diagrams/                — Architecture and sequence diagrams (.mmd)
 lab-journal/               — Discussion and decision logs
