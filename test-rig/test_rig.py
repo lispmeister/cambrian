@@ -6,12 +6,13 @@ Stages: build → test → start → health → report
 Run inside a container with the artifact mounted at /workspace.
 Writes viability-report.json to /workspace on completion.
 """
-import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ HEALTH_POLL_INTERVAL = 0.5
 def run_build(entry: dict[str, Any]) -> dict[str, Any]:
     cmd = entry.get("build", "")
     if not cmd:
-        return {"status": "pass", "duration_ms": 0}
+        return {"passed": True, "duration_ms": 0}
 
     t0 = time.monotonic()
     result = subprocess.run(
@@ -39,18 +40,18 @@ def run_build(entry: dict[str, Any]) -> dict[str, Any]:
 
     if result.returncode != 0:
         return {
-            "status": "fail",
+            "passed": False,
             "duration_ms": duration_ms,
             "stdout_tail": result.stdout[-3000:],
             "stderr_tail": result.stderr[-3000:],
         }
-    return {"status": "pass", "duration_ms": duration_ms}
+    return {"passed": True, "duration_ms": duration_ms}
 
 
 def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
     cmd = entry.get("test", "")
     if not cmd:
-        return {"status": "pass", "duration_ms": 0, "tests_passed": 0, "tests_run": 0}
+        return {"passed": True, "duration_ms": 0, "tests_passed": 0, "tests_run": 0}
 
     t0 = time.monotonic()
     result = subprocess.run(
@@ -64,7 +65,7 @@ def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
 
     if result.returncode != 0:
         return {
-            "status": "fail",
+            "passed": False,
             "duration_ms": duration_ms,
             "tests_passed": tests_passed,
             "tests_run": tests_run,
@@ -72,7 +73,7 @@ def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
             "stderr_tail": result.stderr[-3000:],
         }
     return {
-        "status": "pass",
+        "passed": True,
         "duration_ms": duration_ms,
         "tests_passed": tests_passed,
         "tests_run": tests_run,
@@ -81,7 +82,6 @@ def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_pytest_counts(output: str) -> tuple[int, int]:
     """Extract (passed, total) from pytest output. Returns (0, 0) if unparseable."""
-    import re
     # Match lines like "3 passed", "2 passed, 1 failed", "1 failed"
     passed = 0
     failed = 0
@@ -94,14 +94,29 @@ def _parse_pytest_counts(output: str) -> tuple[int, int]:
     return passed, passed + failed
 
 
-def start_process(entry: dict[str, Any]) -> subprocess.Popen[str]:
+def start_process(entry: dict[str, Any]) -> tuple[subprocess.Popen[str], dict[str, Any]]:
+    """Start the artifact server. Returns (process, check_result)."""
     cmd = entry.get("start", "")
-    # Start the artifact server as a background process
+    t0 = time.monotonic()
     proc = subprocess.Popen(
         cmd, shell=True, cwd=WORKSPACE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    return proc
+    # Give it a moment to crash if it's going to
+    time.sleep(0.5)
+    retcode = proc.poll()
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    if retcode is not None:
+        stdout = proc.stdout.read() if proc.stdout else ""
+        stderr = proc.stderr.read() if proc.stderr else ""
+        return proc, {
+            "passed": False,
+            "duration_ms": duration_ms,
+            "stdout_tail": stdout[-3000:],
+            "stderr_tail": stderr[-3000:],
+        }
+    return proc, {"passed": True, "duration_ms": duration_ms}
 
 
 def run_health_check(health_url: str) -> dict[str, Any]:
@@ -118,14 +133,14 @@ def run_health_check(health_url: str) -> dict[str, Any]:
             with urllib.request.urlopen(health_url, timeout=2) as resp:
                 if resp.status == 200:
                     duration_ms = int((time.monotonic() - t0) * 1000)
-                    return {"status": "pass", "duration_ms": duration_ms}
+                    return {"passed": True, "duration_ms": duration_ms}
         except Exception as e:
             last_error = str(e)
         time.sleep(HEALTH_POLL_INTERVAL)
 
     duration_ms = int((time.monotonic() - t0) * 1000)
     return {
-        "status": "fail",
+        "passed": False,
         "duration_ms": duration_ms,
         "error": f"Health check timed out after {HEALTH_TIMEOUT}s. Last error: {last_error}",
     }
@@ -165,16 +180,24 @@ def compute_fitness(
 
 def run_pipeline() -> None:
     manifest_path = WORKSPACE / "manifest.json"
+
+    # Stage 0: manifest check
     if not manifest_path.exists():
-        _write_report({"status": "non-viable", "failure_stage": "manifest",
-                       "error": "manifest.json not found", "checks": {}, "fitness": {}})
+        _write_report(
+            generation=0,
+            failure_stage="manifest",
+            checks={"manifest": {"passed": False}},
+            fitness={},
+            diagnostics={"stage": "manifest", "summary": "manifest.json not found"},
+        )
         sys.exit(1)
 
     with manifest_path.open() as f:
         manifest: dict[str, Any] = json.load(f)
 
+    generation = manifest.get("generation", 0)
     entry = manifest.get("entry", {})
-    checks: dict[str, Any] = {}
+    checks: dict[str, Any] = {"manifest": {"passed": True}}
     durations: dict[str, int] = {}
 
     # Stage 1: build
@@ -182,11 +205,15 @@ def run_pipeline() -> None:
     build_result = run_build(entry)
     checks["build"] = build_result
     durations["build"] = build_result.get("duration_ms", 0)
-    if build_result["status"] != "pass":
+    if not build_result["passed"]:
         fitness = compute_fitness(checks, manifest, durations)
-        _write_report({"status": "non-viable", "failure_stage": "build",
-                       "checks": checks, "fitness": fitness,
-                       "diagnostics": {"failures": [], **_extract_diag(build_result)}})
+        _write_report(
+            generation=generation,
+            failure_stage="build",
+            checks=checks,
+            fitness=fitness,
+            diagnostics={"stage": "build", "summary": "Build failed", **_extract_diag(build_result)},
+        )
         sys.exit(1)
 
     # Stage 2: test
@@ -194,16 +221,38 @@ def run_pipeline() -> None:
     test_result = run_tests(entry)
     checks["test"] = test_result
     durations["test"] = test_result.get("duration_ms", 0)
-    if test_result["status"] != "pass":
+    if not test_result["passed"]:
+        tests_passed = test_result.get("tests_passed", 0)
+        tests_run = test_result.get("tests_run", 0)
         fitness = compute_fitness(checks, manifest, durations)
-        _write_report({"status": "non-viable", "failure_stage": "test",
-                       "checks": checks, "fitness": fitness,
-                       "diagnostics": {"failures": [], **_extract_diag(test_result)}})
+        _write_report(
+            generation=generation,
+            failure_stage="test",
+            checks=checks,
+            fitness=fitness,
+            diagnostics={
+                "stage": "test",
+                "summary": f"{tests_run - tests_passed} of {tests_run} tests failed",
+                **_extract_diag(test_result),
+            },
+        )
         sys.exit(1)
 
     # Stage 3: start
     print("[test-rig] Stage: start", flush=True)
-    proc = start_process(entry)
+    proc, start_result = start_process(entry)
+    checks["start"] = start_result
+    durations["start"] = start_result.get("duration_ms", 0)
+    if not start_result["passed"]:
+        fitness = compute_fitness(checks, manifest, durations)
+        _write_report(
+            generation=generation,
+            failure_stage="start",
+            checks=checks,
+            fitness=fitness,
+            diagnostics={"stage": "start", "summary": "Process exited immediately", **_extract_diag(start_result)},
+        )
+        sys.exit(1)
 
     # Stage 4: health
     health_url = entry.get("health", "http://localhost:8401/health")
@@ -219,17 +268,26 @@ def run_pipeline() -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
 
-    if health_result["status"] != "pass":
+    if not health_result["passed"]:
         fitness = compute_fitness(checks, manifest, durations)
-        _write_report({"status": "non-viable", "failure_stage": "health",
-                       "checks": checks, "fitness": fitness,
-                       "diagnostics": {"failures": [], **_extract_diag(health_result)}})
+        _write_report(
+            generation=generation,
+            failure_stage="health",
+            checks=checks,
+            fitness=fitness,
+            diagnostics={"stage": "health", "summary": "Health check failed", **_extract_diag(health_result)},
+        )
         sys.exit(1)
 
     # All stages passed
     fitness = compute_fitness(checks, manifest, durations)
     print("[test-rig] All stages passed — viable", flush=True)
-    _write_report({"status": "viable", "checks": checks, "fitness": fitness})
+    _write_report(
+        generation=generation,
+        failure_stage="none",
+        checks=checks,
+        fitness=fitness,
+    )
 
 
 def _extract_diag(result: dict[str, Any]) -> dict[str, Any]:
@@ -243,7 +301,24 @@ def _extract_diag(result: dict[str, Any]) -> dict[str, Any]:
     return diag
 
 
-def _write_report(report: dict[str, Any]) -> None:
+def _write_report(
+    *,
+    generation: int,
+    failure_stage: str,
+    checks: dict[str, Any],
+    fitness: dict[str, Any],
+    diagnostics: dict[str, Any] | None = None,
+) -> None:
+    report: dict[str, Any] = {
+        "generation": generation,
+        "status": "viable" if failure_stage == "none" else "non-viable",
+        "failure_stage": failure_stage,
+        "checks": checks,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "fitness": fitness,
+    }
+    if diagnostics:
+        report["diagnostics"] = diagnostics
     report_path = WORKSPACE / "viability-report.json"
     report_path.write_text(json.dumps(report, indent=2))
     print(f"[test-rig] Report written to {report_path}", flush=True)

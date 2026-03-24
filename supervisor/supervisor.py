@@ -171,6 +171,11 @@ async def handle_rollback(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 async def run_test_rig(generation: int, artifact_path: Path, container_id: str) -> None:
+    """Run the Test Rig container and update the generation record with results.
+
+    Sets outcome to "tested" — Prime is responsible for calling /promote or /rollback
+    to set the final terminal outcome.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     docker = aiodocker.Docker()
     try:
@@ -198,32 +203,32 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
         if report_path.exists():
             with report_path.open() as f:
                 viability = json.load(f)
-            viable = viability.get("status") == "viable"
         else:
-            viability = None
-            viable = False
+            viability = {
+                "generation": generation,
+                "status": "non-viable",
+                "failure_stage": "health",
+                "checks": {},
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "diagnostics": {"stage": "health", "summary": "Viability report not written — container crashed"},
+            }
             log.warning("viability_report_missing", generation=generation)
 
-        # Auto-promote or rollback in artifacts repo
-        try:
-            if viable:
-                tag = await git_ops.promote(generation, artifact_path)
-                outcome = "promoted"
-            else:
-                tag = await git_ops.rollback(generation)
-                outcome = "failed"
-        except git_ops.GitError as e:
-            log.error("git_ops_error", generation=generation, error=str(e))
-            tag = f"gen-{generation}"
-            outcome = "failed"
-
-        generations.update(generation, outcome=outcome, viability=viability, artifact_ref=tag)
-        log.info("test_rig_complete", generation=generation, outcome=outcome, tag=tag)
+        # Set outcome to "tested" — Prime will call /promote or /rollback
+        generations.update(generation, outcome="tested", viability=viability)
+        log.info("test_rig_complete", generation=generation, viable=viability.get("status") == "viable")
 
         await container.delete()
     except Exception as e:
         log.error("test_rig_error", generation=generation, error=str(e))
-        generations.update(generation, outcome="failed", viability=None)
+        generations.update(generation, outcome="tested", viability={
+            "generation": generation,
+            "status": "non-viable",
+            "failure_stage": "health",
+            "checks": {},
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "diagnostics": {"stage": "health", "summary": f"Test rig error: {e}"},
+        })
     finally:
         await docker.close()
 

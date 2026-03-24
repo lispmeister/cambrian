@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.5.0
+version: 0.5.1
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
 ---
 
@@ -186,12 +186,12 @@ start → [read spec + history] → [call LLM] → [parse + write files] → [bu
 
 7. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git.
 
-9. **Poll.** `GET /versions` until the generation record appears with a terminal outcome. Poll interval: 2 seconds.
+9. **Poll.** `GET /versions` until the generation record's outcome is no longer `in_progress`. The Supervisor sets the outcome to `tested` once the Test Rig container exits. Poll interval: 2 seconds.
 
-10. **Decide.**
-    - If `status == "viable"`: `POST /promote {"generation": N}`. Done.
-    - If `status == "non-viable"` and retries remain: `POST /rollback {"generation": N}`. Go to step 3 with failure context (see [Informed Retry](#informed-retry)).
-    - If `status == "non-viable"` and no retries: `POST /rollback {"generation": N}`. Stop.
+10. **Decide.** Read the viability report from the generation record.
+    - If viability status is `viable`: `POST /promote {"generation": N}`. The Supervisor performs the git merge and sets outcome to `promoted`. Done.
+    - If viability status is `non-viable` and retries remain: `POST /rollback {"generation": N}`. The Supervisor tags the failed branch and sets outcome to `failed`. Go to step 3 with failure context (see [Informed Retry](#informed-retry)).
+    - If viability status is `non-viable` and no retries: `POST /rollback {"generation": N}`. Stop.
 
 ### Retry semantics
 
@@ -308,7 +308,7 @@ Generation number: {N}
 Parent generation: {parent}
 ```
 
-Prime reads the failed source code via `git show gen-{N-1}-failed:{path}` for each file listed in the failed generation's manifest.
+Prime reads the failed source code from the local filesystem — the files are still on disk from the previous write. Prime MUST NOT use git to read files (see Invariants).
 
 ## Implementation Requirements
 
