@@ -2,8 +2,8 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
+version: 0.5.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
-parent-spec: CAMBRIAN-SPEC-004
 ---
 
 # CAMBRIAN-SPEC-005 — The Genome
@@ -13,6 +13,23 @@ parent-spec: CAMBRIAN-SPEC-004
 This is the genome. An LLM reads this document and produces a complete, working Prime — a code generator that can read *this same document* and produce another Prime. The output is not a diff, not a patch, not a fragment. It is a complete codebase: source files, tests, manifest, and this spec file — everything needed to run.
 
 Prime is a general-purpose code generator. Give it any spec and it produces a working codebase. Self-reproduction is what happens when Prime is given *its own* spec as input.
+
+## Invariants
+
+These rules are absolute. They define what it means to be Prime.
+
+- **Prime MUST NOT modify the spec.** The spec is the genome — it defines what Prime is. If the spec changes, it changes through an external process (human editing or future M2+ mutation), never through Prime's own initiative.
+- **Prime MUST NOT self-assess viability.** Viability is determined by the Test Rig (environment). Prime requests verification and accepts the verdict. It never declares itself viable without external confirmation.
+- **Prime MUST NOT perform git operations.** Git is Supervisor-managed infrastructure. Prime writes files to its workspace. The Supervisor handles branches, commits, tags, and merges.
+
+## Glossary
+
+- **Spec** — This document. The genome. Defines what Prime is. Input to LLM code generation.
+- **Prime** — The organism. An async HTTP server that reads the spec, calls an LLM, produces code, and requests verification. Contains its own source code and spec.
+- **Artifact** — A directory containing a complete generated codebase: source files, test suite, spec copy, and `manifest.json`. Produced by Prime. Immutable once written.
+- **Manifest** — `manifest.json` at the artifact root. The fixed-point contract between organism and environment. Describes how to build, test, and start Prime.
+- **Generation** — One attempt to produce a viable artifact. Each gets a monotonically increasing number, a git branch (`gen-N`), and an audit record.
+- **Viability Report** — Structured JSON written by the Test Rig at `/workspace/viability-report.json`. Binary outcome: `viable` or `non-viable`. Read by Prime via the generation record.
 
 ## What Prime Does
 
@@ -130,6 +147,19 @@ When `status` is `non-viable`, the report includes a `diagnostics` object:
 
 Prime reads `status`. If `viable`, promote. If `non-viable`, rollback and optionally retry with `diagnostics` as context.
 
+**Viability report field rules:**
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer matching the artifact's generation. |
+| `status` | MUST | One of: `viable`, `non-viable`. |
+| `failure_stage` | MUST | One of: `none`, `manifest`, `build`, `test`, `start`, `health`. First stage that failed, or `none` when viable. |
+| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` check MUST include `tests_run` and `tests_passed`. `health` check MAY include a `contracts` sub-object with per-contract results. |
+| `completed_at` | MUST | ISO-8601 timestamp. |
+| `diagnostics` | MAY | Present when `status` is `non-viable`. Object with `stage`, `summary`, `exit_code`, `failures[]`, `stdout_tail`, `stderr_tail`. |
+
+Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempted and their `passed` fields are `false`.
+
 ## The Generation Loop
 
 ```
@@ -148,15 +178,13 @@ start → [read spec + history] → [call LLM] → [parse + write files] → [bu
 
 3. **Build the LLM prompt.** See [LLM Integration](#llm-integration) below.
 
-4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: best available Claude model). The response contains file contents in tagged blocks.
+4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: `claude-opus-4-6`). The response contains file contents in tagged blocks.
 
 5. **Parse the response.** Extract files from `<file path="...">content</file>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
 
 6. **Write files to workspace.** Create a directory for the artifact. Write all parsed files. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata.
 
-7. **Commit.** Create git branch `gen-N`. Add all files. Commit.
-
-8. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number.
+7. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git.
 
 9. **Poll.** `GET /versions` until the generation record appears with a terminal outcome. Poll interval: 2 seconds.
 
@@ -171,6 +199,20 @@ Each retry is a NEW generation with a new number. Retries MUST NOT reuse previou
 
 Maximum retries: `CAMBRIAN_MAX_RETRIES` (default 3).
 Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
+
+## Failure Handling
+
+| Failure | Trigger | Response |
+|---------|---------|----------|
+| Unparseable LLM output | LLM returns malformed or incomplete `<file>` blocks | Record failed attempt. Retry with fresh LLM call (up to `CAMBRIAN_MAX_RETRIES`). |
+| Build failure | `entry.build` exits non-zero | Non-viable verdict from Test Rig. Rollback, then retry as informed retry. |
+| Test failure | `entry.test` exits non-zero | Non-viable verdict. Rollback, then retry. |
+| Start timeout | Prime doesn't bind HTTP port within 30s | Non-viable verdict. Rollback, then retry. |
+| Health check failure | `GET /health` returns non-200 | Non-viable verdict. Rollback, then retry. |
+| Supervisor unreachable | Network error on any Supervisor call | Exponential backoff: 1s, 2s, 4s, 8s, 16s, then 60s ceiling. Do not proceed without verification — never self-promote. |
+| LLM rate-limited | HTTP 429 from LLM API | Respect `retry-after` header. Pause and retry. Do not count as a generation failure. |
+| All retries exhausted | `CAMBRIAN_MAX_RETRIES` reached for one generation | Record generation as failed. Stop. Do not modify the spec. |
+| Container crash | Test Rig container exits without writing viability report | Supervisor records `outcome: failed`. Treat as non-viable. Retry. |
 
 ## LLM Integration
 
@@ -330,7 +372,7 @@ Tests MUST be runnable with `python -m pytest tests/ -v`.
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `ANTHROPIC_API_KEY` | MUST | — | LLM API authentication |
-| `CAMBRIAN_MODEL` | MAY | `claude-sonnet-4-20250514` | LLM model for generation |
+| `CAMBRIAN_MODEL` | MAY | `claude-opus-4-6` | LLM model for generation |
 | `CAMBRIAN_MAX_GENS` | MAY | `5` | Max generation attempts before stopping |
 | `CAMBRIAN_MAX_RETRIES` | MAY | `3` | Max consecutive failures before stopping |
 | `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://localhost:8400` | Supervisor endpoint |
@@ -379,9 +421,9 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ```yaml
 spec-version: "005"
+version: "0.5.0"
 organism: "cambrian"
 lineage: "genesis"
-parent-spec: "CAMBRIAN-SPEC-004"
 language: "python 3.14t (M1)"
 ```
 

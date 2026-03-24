@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A self-reproducing code factory. See [README.md](README.md) for project goals and [spec/CAMBRIAN-SPEC-004.md](spec/CAMBRIAN-SPEC-004.md) for the system specification.
+A self-reproducing code factory. See [README.md](README.md) for project goals, [spec/CAMBRIAN-SPEC-005.md](spec/CAMBRIAN-SPEC-005.md) for the genome spec, and [spec/BOOTSTRAP-SPEC-002.md](spec/BOOTSTRAP-SPEC-002.md) for the bootstrap spec.
 
 ## Key Concepts
 
@@ -13,24 +13,24 @@ A self-reproducing code factory. See [README.md](README.md) for project goals an
 
 ## Sacred Files
 
-DO NOT MODIFY the test rig's viability report schema or the Supervisor HTTP API contracts without explicit user approval. These are the fixed points that allow components to communicate across generations.
+DO NOT MODIFY the test rig's viability report schema or the Supervisor HTTP API contracts without explicit user approval. These are the fixed points that allow components to communicate across generations. They are defined in CAMBRIAN-SPEC-005 and BOOTSTRAP-SPEC-002.
 
 ## Project Structure
 
 ```
 spec/
-  CAMBRIAN-SPEC-004.md   — System spec (contracts, schemas, lifecycle)
-  BOOTSTRAP-SPEC-002.md  — Bootstrap spec (Supervisor, Test Rig, infrastructure) [BOOTSTRAP-SPEC-001 is superseded]
   CAMBRIAN-SPEC-005.md   — Genome spec (what Prime is — consumed by LLM)
+  BOOTSTRAP-SPEC-002.md  — Bootstrap spec (Supervisor, Test Rig, infrastructure)
   SPEC-STYLE-GUIDE.md    — How to write specs
   diagrams/              — Architecture and sequence diagrams (.mmd, .svg, .png)
+  archive/               — Superseded specs (SPEC-001 through 004, BOOTSTRAP-SPEC-001)
 lab-journal/
   journal-*.md           — Discussion and decision logs
 ```
 
 ## Implementation Language
 
-Python 3.14 free-threaded build (`python3.14t`) for everything in M1. See CAMBRIAN-SPEC-004 § Implementation Language for full details.
+Python 3.14 free-threaded build (`python3.14t`) for everything in M1. See BOOTSTRAP-SPEC-002 § Implementation Language for full details.
 
 ## Tech Stack
 
@@ -79,8 +79,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 
 ## References
 
-- [CAMBRIAN-SPEC-004](spec/CAMBRIAN-SPEC-004.md) — System specification
-- [BOOTSTRAP-SPEC-002](spec/BOOTSTRAP-SPEC-002.md) — Bootstrap specification (authoritative; BOOTSTRAP-SPEC-001 is superseded)
+- [CAMBRIAN-SPEC-005](spec/CAMBRIAN-SPEC-005.md) — Genome spec (the living contract)
+- [BOOTSTRAP-SPEC-002](spec/BOOTSTRAP-SPEC-002.md) — Bootstrap specification
 - [SPEC-STYLE-GUIDE](spec/SPEC-STYLE-GUIDE.md) — Spec writing conventions
 - [Loom](https://github.com/lispmeister/loom) — Predecessor project (archived at v0.2.0)
 - [Final retrospective](https://github.com/lispmeister/loom/blob/master/architecture-reviews/review-2026-03-20-001.md) — Lessons from Loom

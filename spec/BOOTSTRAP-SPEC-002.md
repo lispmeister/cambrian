@@ -2,8 +2,8 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
+version: 0.2.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
-parent-spec: CAMBRIAN-SPEC-004
 ancestor: BOOTSTRAP-SPEC-001
 ---
 
@@ -31,18 +31,18 @@ Execution path:
 
 ## Problem Statement
 
-The Cambrian system has no running code yet. The spec (CAMBRIAN-SPEC-004) defines what the system should be, but there is no Supervisor to manage containers, no Test Rig to verify artifacts, and no Prime to generate code. All three must be built from scratch before the self-reproducing loop can begin.
+The Cambrian system has no running code yet. CAMBRIAN-SPEC-005 (the genome) defines what Prime is, but there is no Supervisor to manage containers, no Test Rig to verify artifacts, and no Prime to generate code. All three must be built from scratch before the self-reproducing loop can begin.
 
 The bootstrap is a chicken-and-egg problem: Prime needs the Supervisor and Test Rig to verify its offspring, but nobody exists yet to build them. The solution is human + agent collaboration for the initial build, then hand-off to the autonomous loop.
 
 ## Goals
 
-- Build a working Supervisor that implements the full HTTP API from CAMBRIAN-SPEC-004.
-- Build a working Test Rig that executes the verification pipeline from CAMBRIAN-SPEC-004.
+- Build a working Supervisor that implements the full HTTP API defined in this document.
+- Build a working Test Rig that executes the verification pipeline defined in this document.
 - Create Docker infrastructure (base images, networking, credential injection).
 - Verify the infrastructure end-to-end with a hand-crafted test artifact before generating Prime.
 - Generate Gen-1 Prime interactively and promote it through the standard pipeline.
-- Leave a clean, documented state for CAMBRIAN-SPEC-005 to take over.
+- Leave a clean, documented state for CAMBRIAN-SPEC-005 to drive autonomous reproduction.
 
 ## Non-Goals
 
@@ -96,7 +96,7 @@ All Python code MUST be fully type-annotated. Type checking is enforced in CI �
 Rules:
 - **Annotate aggressively.** Every function signature, every return type, every class attribute. Start strict from day one — retrofitting annotations is expensive.
 - **Type checker:** Pyright in strict mode. Configured via `pyrightconfig.json` at project root. Zero errors tolerated in CI. Migration path: switch to `ty` (Astral, Rust-based, 10-60x faster) when its Pydantic plugin ships ([astral-sh/ty#2403](https://github.com/astral-sh/ty/issues/2403)). No annotation changes required — both consume the same type syntax.
-- **I/O boundary validation and JSON handling:** Pydantic v2 for all data crossing process or network boundaries — manifest parsing, HTTP request/response bodies, viability reports, generation records. Pydantic models are the single source of truth for schemas defined in CAMBRIAN-SPEC-004. All JSON deserialization at boundaries MUST use `model_validate_json()`, all serialization MUST use `model_dump_json()`. Raw `json.loads()`/`json.dumps()` MUST NOT be used at I/O boundaries — only for internal formatting where no validation is needed.
+- **I/O boundary validation and JSON handling:** Pydantic v2 for all data crossing process or network boundaries — manifest parsing, HTTP request/response bodies, viability reports, generation records. Pydantic models are the single source of truth for schemas defined in this document and CAMBRIAN-SPEC-005. All JSON deserialization at boundaries MUST use `model_validate_json()`, all serialization MUST use `model_dump_json()`. Raw `json.loads()`/`json.dumps()` MUST NOT be used at I/O boundaries — only for internal formatting where no validation is needed.
 - **Precise constructs:** Prefer `Protocol` over abstract base classes, `TypedDict` for JSON-shaped data, `Literal` for enums with few values (e.g., `Literal["viable", "non-viable"]`), `Self` for fluent APIs. Avoid `Any` — if a type is truly unknown, use `object` and narrow with `isinstance`.
 - **No runtime cost:** Type annotations are erased at runtime. Pydantic validation happens at I/O boundaries only, not on internal function calls.
 
@@ -128,7 +128,7 @@ Every component validates its inputs on startup. Missing `ANTHROPIC_API_KEY` is 
 
 ## Model
 
-All terms are defined in CAMBRIAN-SPEC-004 § Model. This spec adds:
+Core terms (Spec, Prime, Artifact, Manifest, Generation, Viability Report) are defined in CAMBRIAN-SPEC-005 § Glossary. This spec adds:
 
 - **Test Artifact** — A hand-crafted, minimal Python HTTP server used to validate infrastructure before Prime exists. Not a Prime. Disposable after Phase 0.
 - **Bootstrap Agent** — The human + Claude Code pair performing the interactive build. Not part of the running system.
@@ -141,7 +141,7 @@ The Supervisor is a host-side HTTP server. It runs on the host machine (not in a
 
 ### 1.2 HTTP API
 
-Implements all endpoints defined in CAMBRIAN-SPEC-004 § Supervisor HTTP API:
+Implements the following HTTP API (Prime calls these endpoints via CAMBRIAN-SPEC-005 § Supervisor HTTP API):
 
 | Method | Path       | Purpose |
 |--------|------------|---------|
@@ -179,9 +179,42 @@ app.router.add_post("/rollback", rollback_handler)
 
 - Stored in `generations.json` in the project root (host filesystem).
 - Append-only means no record is ever deleted and no completed record is ever modified. An `in-progress` record is updated exactly once to its terminal state (promoted, failed, timeout) — this lifecycle transition is not a violation of append-only semantics. Once a record has a terminal outcome it is immutable.
-- Schema per CAMBRIAN-SPEC-004 § Generation Record.
 - The file is a JSON array. On startup, if the file doesn't exist, create it with `[]`.
 - Concurrent access is not a concern for M1 (single Prime, sequential generations).
+
+**Generation Record schema:**
+
+```json
+{
+  "generation": 1,
+  "parent": 0,
+  "spec-hash": "sha256:abc123...",
+  "artifact-hash": "sha256:def456...",
+  "outcome": "promoted",
+  "artifact_ref": "gen-1",
+  "created": "2026-03-21T14:30:00Z",
+  "completed": "2026-03-21T14:32:30Z",
+  "container-id": "lab-gen-1",
+  "viability": {
+    "status": "viable",
+    "failure_stage": "none",
+    "checks": { "...": "..." }
+  }
+}
+```
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer >= 1. |
+| `parent` | MUST | Integer >= 0. |
+| `spec-hash` | MUST | SHA-256 hex digest (with `sha256:` prefix). |
+| `artifact-hash` | MUST | SHA-256 hex digest read from `manifest.json` in the artifact. |
+| `outcome` | MUST | One of: `promoted`, `failed`, `timeout`, `in-progress`. |
+| `artifact_ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in-progress`. |
+| `created` | MUST | ISO-8601 timestamp (when spawn was received). |
+| `completed` | MAY | ISO-8601 timestamp. Absent while `in-progress`. |
+| `container-id` | MUST | Name of the Test Rig container (e.g., `lab-gen-1`). |
+| `viability` | MAY | The full viability report. Absent while `in-progress`. |
 
 **Docker Container Lifecycle:**
 
@@ -298,7 +331,7 @@ A mechanical verification pipeline. Reads `manifest.json` from the artifact, exe
 
 ### 2.2 Pipeline
 
-Per CAMBRIAN-SPEC-004 § Lifecycle → Verify:
+Pipeline:
 
 ```
 read-manifest → build → test → start → health-check → report
@@ -348,7 +381,7 @@ Stage 5 — Health Check:
   - After checks: terminate the started process (SIGTERM, then SIGKILL after 5s)
 
 Report:
-  - Write /workspace/viability-report.json per CAMBRIAN-SPEC-004 schema
+  - Write /workspace/viability-report.json per CAMBRIAN-SPEC-005 § Viability Report schema
   - Compute fitness vector from checks data + manifest (see §2.8)
   - If any stage failed, include a diagnostics object (see §2.6)
   - Exit 0 if all stages passed (status=viable)
@@ -380,7 +413,7 @@ The manifest MAY include a `contracts` array — a list of declarative checks th
 
 **Why this matters:** In M1, the health-check stage hard-codes two checks (`GET /health` → 200, `GET /stats` → JSON with `generation`). This works because every M1 organism is a Prime with the same HTTP API. But in M2, when the spec mutates, organisms may expose different endpoints, different schemas, different behavior. Without contracts, every spec mutation would require a corresponding Test Rig change — coupling the organism's evolution to the environment's code. Contracts break that coupling. The organism evolves its spec, declares its contracts, and the Test Rig verifies them without modification.
 
-**Backward compatibility:** Contracts are optional. If `contracts` is absent from the manifest, the Test Rig falls back to the hard-coded health-check behavior defined in CAMBRIAN-SPEC-004 § Prime HTTP API. This means all existing manifests (including the test artifact) continue to work unchanged. Contracts are additive — they extend verification, never replace the fixed pipeline stages (build → test → start → health → report).
+**Backward compatibility:** Contracts are optional. If `contracts` is absent from the manifest, the Test Rig falls back to the hard-coded health-check behavior (defined in CAMBRIAN-SPEC-005 § Prime HTTP API). This means all existing manifests (including the test artifact) continue to work unchanged. Contracts are additive — they extend verification, never replace the fixed pipeline stages (build → test → start → health → report).
 
 #### Contract Schema
 
@@ -474,9 +507,9 @@ Each contract result includes:
 
 When contracts are absent (fallback mode), the `contracts` sub-object is omitted from the report. Existing report consumers are unaffected.
 
-#### SPEC-004 Manifest Extension
+#### Manifest Extension
 
-This section proposes adding `contracts` as an optional field to the Artifact Manifest schema defined in CAMBRIAN-SPEC-004. The field rules:
+The `contracts` field is an optional extension to the Artifact Manifest schema (CAMBRIAN-SPEC-005 § Artifact Manifest). The field rules:
 
 | Field | Required | Rule |
 |-------|----------|------|
@@ -490,7 +523,7 @@ When any pipeline stage fails, the Test Rig MUST include a `diagnostics` object 
 
 **Why this matters:** Loom achieved a 1.4% viability rate (1 promotion in 72 generations). A major contributor was blind retry — when a generation failed, the next attempt had no structured information about the failure. The LLM re-read the spec and tried again from scratch. Structured diagnostics turn the Test Rig from a Darwinian oracle (binary pass/fail, organism retries blindly) into a Lamarckian teaching signal (structured failure context feeds forward into the next generation's prompt). The organism doesn't mutate randomly — it learns what went wrong.
 
-**Design principle:** The diagnostics section is produced by the environment (Test Rig), stored by the environment (Supervisor, in the generation record), and consumed by the organism (Prime, when constructing the LLM prompt for the next attempt). The organism MUST NOT produce its own diagnostics — only the environment can assess failure. This preserves the "environment judges, not the organism" invariant from CAMBRIAN-SPEC-004.
+**Design principle:** The diagnostics section is produced by the environment (Test Rig), stored by the environment (Supervisor, in the generation record), and consumed by the organism (Prime, when constructing the LLM prompt for the next attempt). The organism MUST NOT produce its own diagnostics — only the environment can assess failure. This preserves the "environment judges, not the organism" invariant from CAMBRIAN-SPEC-005 § Invariants.
 
 #### Diagnostics Schema
 
@@ -593,9 +626,9 @@ LLM generates improved code
 
 This creates a feedback loop where each failed generation informs the next attempt. The Test Rig's diagnostic output is the teaching signal; the LLM is the learner.
 
-#### SPEC-004 Viability Report Extension
+#### Viability Report Extension
 
-This section proposes adding `diagnostics` as an optional field to the Viability Report schema defined in CAMBRIAN-SPEC-004. The field rules:
+The `diagnostics` field is an optional extension to the Viability Report schema (CAMBRIAN-SPEC-005 § Viability Report). The field rules:
 
 | Field | Required | Rule |
 |-------|----------|------|
@@ -609,7 +642,7 @@ When a generation fails and Prime has retries remaining (`CAMBRIAN_MAX_RETRIES`)
 
 **Why this matters:** Diagnostics (§2.6) tell Prime *what* failed. The failed source code tells Prime *where* the bug is. Together, they transform retry from "read the spec and try again from scratch" into "here's what you wrote, here's what broke, fix it." This is the difference between asking a developer to rewrite a program from a spec vs. asking them to debug code they can see. The latter is dramatically more likely to succeed.
 
-**Philosophical reconciliation:** CAMBRIAN-SPEC-004 says "regenerate the entire codebase from scratch each generation." Informed retry does not violate this. The distinction is:
+**Philosophical reconciliation:** CAMBRIAN-SPEC-005 says "regenerate the entire codebase from scratch each generation." Informed retry does not violate this. The distinction is:
 
 - **Retries** (within `CAMBRIAN_MAX_RETRIES` for the same spec) are **Lamarckian** — the organism learns from failure. The failed code is a scaffold for the fix, not a codebase to accumulate on. Each retry still produces a complete artifact.
 - **Generations** (across spec versions in M2) are **Darwinian** — clean-room regeneration from the mutated spec. No previous code is referenced. No path dependence.
@@ -721,6 +754,17 @@ For non-viable reports, fitness includes partial metrics from completed stages. 
 
 **Line counting:** The Test Rig counts lines using a simple newline count (`\n`). Binary files are skipped (files that contain null bytes in their first 8KB). This is a rough metric — it measures volume, not complexity — but it's cheap, deterministic, and sufficient for cross-generation comparison.
 
+**Fitness dimensions:**
+
+- **Speed** — `build_duration_ms`, `test_duration_ms`, `start_duration_ms`, `health_duration_ms`, `total_duration_ms`. Faster organisms are cheaper to verify and reproduce.
+- **Correctness** — `test_count`, `test_pass_rate`. More tests with higher pass rates indicate more thorough self-verification.
+- **Economy** — `token_input`, `token_output`, `source_lines`, `dependency_count`. Organisms that achieve viability with fewer tokens and less code are cheaper to reproduce.
+- **Robustness** — `test_files`, `test_lines`, test-to-source ratio (`test_lines / source_lines`). Higher testing density correlates with fewer latent bugs.
+
+**M1 usage:** Fitness data is stored in every generation record. No automated selection occurs in M1.
+
+**M2+ usage:** Selection policies will consume the fitness vector to choose between viable organisms. The specific selection criteria (minimize `total_duration_ms`, maximize `test_count`, Pareto-optimal across dimensions, etc.) are deferred. The measurement apparatus is defined here so historical data exists from Gen-1 onward.
+
 ## 3. Docker Infrastructure
 
 ### 3.1 Base Image
@@ -763,7 +807,7 @@ No custom Docker networks are needed for M1.
 
 ### 3.3 Credential Injection
 
-Per CAMBRIAN-SPEC-004 § Container Requirements → Credential Injection:
+Credentials are injected via environment variables at container creation:
 
 ```python
 config = {
@@ -1050,9 +1094,45 @@ Adjust the `--entrypoint` and source path to match where Gen-1's entrypoint live
 7. Gen-3 is spawned and tested
 8. If viable: M1 is complete
 
-**Done when:** The M1 acceptance criteria from CAMBRIAN-SPEC-004 § Validation → Reproductive check are met.
+**Done when:** The M1 acceptance criteria from CAMBRIAN-SPEC-005 § Acceptance Criteria → Reproductive are met.
 
-## 6. Project Directory Structure
+## 6. Minimal Spec (M1 Operationality Test)
+
+The Minimal Spec is a small specification used to verify that a reproduced Prime is operational — that it can read a spec, call an LLM, and produce viable code — without requiring full self-reproduction.
+
+This is the termination criterion for the M1 acceptance test. Gen-2 Prime is given this spec instead of the full genome spec. The echo server it produces is verified by the Test Rig, then the chain terminates (the echo server cannot reproduce).
+
+### Why This Spec
+
+- **Small enough** to be cheap (few hundred tokens of LLM output)
+- **Exercises the full pipeline**: spec → LLM → code → build → test → start → health check
+- **Uses the same Test Rig**: the artifact includes a valid `manifest.json`, so the standard verification pipeline works unchanged
+- **Proves operationality**: Prime can read a spec, call an LLM, write files, create a manifest, and request verification
+- **Does not recurse**: the echo server is not a Prime, so the chain terminates
+
+### Minimal Spec Content
+
+```
+Produce an HTTP server with the following behavior:
+
+- GET /health → 200 OK, body: {"ok": true}
+- GET /echo?msg=X → 200 OK, body: {"echo": "X"}
+- GET /echo with no msg parameter → 400, body: {"error": "missing msg parameter"}
+
+The server MUST:
+- Listen on port 8401
+- Respond with Content-Type: application/json
+- Include a test suite that verifies all three endpoints
+
+Produce a manifest.json conforming to the Cambrian artifact manifest contract.
+```
+
+### How to Use
+
+In Stage 2, after Gen-2 Prime is promoted, set `CAMBRIAN_SPEC_PATH` to point to a file containing the Minimal Spec content above. Start Gen-2 Prime. It generates Gen-3 (the echo server). If Gen-3 passes the Test Rig, M1 is complete.
+
+## 7. Project Directory Structure
+
 
 After bootstrap is complete:
 
@@ -1073,11 +1153,11 @@ cambrian/
     tests/test_server.py  — Test server tests
     requirements.txt      — Empty
   spec/
-    CAMBRIAN-SPEC-004.md  — System spec
     CAMBRIAN-SPEC-005.md  — Genome spec (Prime definition)
-    BOOTSTRAP-SPEC-001.md — This document
+    BOOTSTRAP-SPEC-002.md — This document
     SPEC-STYLE-GUIDE.md   — Spec writing guide
     diagrams/             — Architecture and sequence diagrams
+    archive/              — Superseded specs (SPEC-001 through 004, BOOTSTRAP-SPEC-001)
   lab-journal/
     journal-*.md          — Discussion and decision logs
   generations.json        — Generation history (created at runtime)
@@ -1090,7 +1170,7 @@ cambrian/
   CLAUDE.md
 ```
 
-## 7. Configuration
+## 8. Configuration
 
 All configuration is via environment variables on the host.
 
@@ -1102,7 +1182,7 @@ All configuration is via environment variables on the host.
 | `CAMBRIAN_DOCKER_IMAGE` | MAY | `cambrian-base` | Docker image name |
 | `CAMBRIAN_WORKSPACE_ROOT` | MAY | `.` | Root directory for artifacts and git |
 
-## 8. Failure Modes
+## 9. Failure Modes
 
 | Failure | Trigger | Response |
 |---------|---------|----------|
@@ -1123,7 +1203,7 @@ All configuration is via environment variables on the host.
 | Failed artifact unreadable | Prime cannot `git show` files from failed tag | Non-fatal. Prime falls back to blind retry (spec + diagnostics only, no source code). |
 | Pathological output volume | Failed command produces megabytes of output | `stdout_tail` and `stderr_tail` capped at last 100 lines. Individual `error` strings capped at 500 characters. Viability report size stays bounded. |
 
-## 9. Validation
+## 10. Validation
 
 ### Mechanical checks (Phase 0 acceptance)
 
@@ -1183,9 +1263,9 @@ All configuration is via environment variables on the host.
 - All async tests run via `pytest-asyncio` without event loop warnings
 - `uv.lock` is committed and `uv sync` reproduces the environment
 
-## 10. References
+## 11. References
 
-- [CAMBRIAN-SPEC-004](CAMBRIAN-SPEC-004.md) — System spec defining all contracts and schemas
+- [CAMBRIAN-SPEC-005](CAMBRIAN-SPEC-005.md) — Genome spec (Prime definition, schemas, contracts)
 - [SPEC-STYLE-GUIDE](SPEC-STYLE-GUIDE.md) — Spec writing conventions
 - [Loom final retrospective](https://github.com/lispmeister/loom/blob/master/architecture-reviews/review-2026-03-20-001.md) — Lessons from the predecessor project
 
@@ -1193,8 +1273,8 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
+version: "0.2.0"
 spec-type: "bootstrap"
-parent-spec: "CAMBRIAN-SPEC-004"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14t"
 ```
