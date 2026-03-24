@@ -20,7 +20,7 @@ DO NOT MODIFY the test rig's viability report schema or the Supervisor HTTP API 
 ```
 spec/
   CAMBRIAN-SPEC-004.md   — System spec (contracts, schemas, lifecycle)
-  BOOTSTRAP-SPEC-001.md  — Bootstrap spec (Supervisor, Test Rig, infrastructure)
+  BOOTSTRAP-SPEC-002.md  — Bootstrap spec (Supervisor, Test Rig, infrastructure) [BOOTSTRAP-SPEC-001 is superseded]
   CAMBRIAN-SPEC-005.md   — Genome spec (what Prime is — consumed by LLM)
   SPEC-STYLE-GUIDE.md    — How to write specs
   diagrams/              — Architecture and sequence diagrams (.mmd, .svg, .png)
@@ -80,7 +80,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 ## References
 
 - [CAMBRIAN-SPEC-004](spec/CAMBRIAN-SPEC-004.md) — System specification
-- [BOOTSTRAP-SPEC-001](spec/BOOTSTRAP-SPEC-001.md) — Bootstrap specification
+- [BOOTSTRAP-SPEC-002](spec/BOOTSTRAP-SPEC-002.md) — Bootstrap specification (authoritative; BOOTSTRAP-SPEC-001 is superseded)
 - [SPEC-STYLE-GUIDE](spec/SPEC-STYLE-GUIDE.md) — Spec writing conventions
 - [Loom](https://github.com/lispmeister/loom) — Predecessor project (archived at v0.2.0)
 - [Final retrospective](https://github.com/lispmeister/loom/blob/master/architecture-reviews/review-2026-03-20-001.md) — Lessons from Loom

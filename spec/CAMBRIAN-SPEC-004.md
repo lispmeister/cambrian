@@ -81,7 +81,7 @@ Viability is determined by the Test Rig (environment), not by Prime (organism). 
 
 ### Append-only audit trail
 
-Every generation attempt — successful or not — is recorded. Records are never overwritten, never deleted. The history is the ground truth for debugging, analysis, and future fitness evaluation.
+Every generation attempt — successful or not — is recorded. Records are never deleted. An in-progress record is updated exactly once to its terminal state (promoted, failed, or timeout) — this single mutation is the lifecycle transition, not a correction or overwrite. Once a record has a terminal outcome it is immutable. The history is the ground truth for debugging, analysis, and future fitness evaluation.
 
 ## Model
 
@@ -157,7 +157,7 @@ Every artifact MUST include a `manifest.json` at its root.
 | Field | Required | Rule |
 |-------|----------|------|
 | `cambrian-version` | MUST | Integer. Currently `1`. |
-| `generation` | MUST | Integer >= 1. Monotonically increasing. |
+| `generation` | MUST | Integer >= 0. `0` for hand-crafted test artifacts only; >= 1 for LLM-generated artifacts. Monotonically increasing across generated artifacts. |
 | `parent-generation` | MUST | Integer >= 0. `0` for bootstrap-produced artifacts. |
 | `spec-hash` | MUST | SHA-256 hex digest of the spec file used to generate this artifact. |
 | `artifact-hash` | MUST | SHA-256 hex digest of all artifact files except `manifest.json`. |
@@ -363,7 +363,9 @@ Maintained by the Supervisor in an append-only JSON file (`generations.json`).
 
 **Notes:**
 
-- `POST /spawn` is asynchronous. It creates the container with outbound network access, injects `ANTHROPIC_API_KEY` from the Supervisor's own environment, starts the Test Rig, and returns immediately. Prime polls `GET /stats` or waits for the generation to appear in `GET /versions` with a terminal `outcome`.
+- `POST /spawn` is asynchronous. Upon receiving the request, the Supervisor: (1) creates the `gen-N` git branch and commits the artifact files from `artifact-path`; (2) creates the Test Rig container; (3) returns `{"ok": true, "container-id": ..., "generation": N}` immediately; (4) runs the Test Rig as a background async task. Prime polls `GET /versions` until generation N has a terminal `outcome`.
+- `artifact-path` in the spawn request MUST be an absolute path, or a path relative to `CAMBRIAN_WORKSPACE_ROOT`. The Supervisor resolves relative paths before performing Docker bind mounts (which require absolute paths).
+- `artifact-hash` in the generation record is computed by the Supervisor from the manifest's `artifact-hash` field after reading the artifact at `artifact-path`. The Supervisor reads this from `manifest.json` — it does not recompute it independently in M1.
 - `POST /promote` MUST: merge `gen-N` to `main`, create annotated tag `gen-N`, delete the branch, update the generation record.
 - `POST /rollback` MUST: create annotated tag `gen-N-failed` (preserving the failed artifact for informed retry), delete branch `gen-N`, update the generation record to `outcome: failed` with `artifact_ref: "gen-N-failed"`.
 - All POST endpoints MUST return `{"ok": false, "error": "..."}` on failure, never throw.
@@ -445,12 +447,13 @@ All configuration is via environment variables. Precedence: env var > default.
 | Variable              | Required | Default          | Purpose |
 |-----------------------|----------|------------------|---------|
 | `ANTHROPIC_API_KEY`   | MUST     | —                | LLM API authentication |
-| `CAMBRIAN_MODEL`      | MAY      | *best available* | LLM model identifier for generation |
+| `CAMBRIAN_MODEL`      | MAY      | `claude-opus-4-6` | LLM model identifier for generation |
 | `CAMBRIAN_MAX_GENS`   | MAY      | `5`              | Maximum generation attempts before stopping |
 | `CAMBRIAN_MAX_RETRIES`| MAY      | `3`              | Maximum retries per generation on LLM output failure |
 | `CAMBRIAN_TOKEN_BUDGET` | MAY    | `0`              | Maximum cumulative tokens. `0` means unlimited. |
 | `CAMBRIAN_SUPERVISOR_URL` | MAY  | `http://localhost:8400` | Supervisor HTTP endpoint |
-| `CAMBRIAN_SPEC_PATH`  | MAY      | `./spec/CAMBRIAN-SPEC-004.md` | Path to the spec file |
+| `CAMBRIAN_SPEC_PATH`  | MAY      | `./spec/CAMBRIAN-SPEC-005.md` | Path to the genome spec file (CAMBRIAN-SPEC-005, not this system spec) |
+| `CAMBRIAN_WORKSPACE_ROOT` | MAY  | `./workspace`    | Host-side directory bind-mounted into containers as `/workspace`. Supervisor resolves relative `artifact-path` values in spawn requests against this directory. |
 
 ## Container Requirements
 
@@ -525,7 +528,7 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
 ### Example 1: Happy path — successful generation and promotion
 
 ```
-1. Prime starts in container. Reads spec from /workspace/spec/CAMBRIAN-SPEC-004.md.
+1. Prime starts in container. Reads spec from /workspace/spec/CAMBRIAN-SPEC-005.md.
 2. Prime loads generation history from Supervisor (GET /versions → empty list).
 3. Prime calls LLM:
    - System: "You are a code generator. Produce a complete, working codebase
@@ -533,14 +536,17 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
    - User: [full spec content]
 4. LLM returns 8 files: src/prime.py, src/api.py, src/generate.py,
    tests/test_api.py, tests/test_generate.py, requirements.txt,
-   manifest.json, spec/CAMBRIAN-SPEC-004.md.
-5. Prime writes files to /workspace/gen-1/.
+   manifest.json, spec/CAMBRIAN-SPEC-005.md.
+5. Prime writes files to /workspace/gen-1/ (a directory within the mounted workspace).
 6. Prime computes spec-hash and artifact-hash, writes manifest.json.
-7. Prime commits to gen-1 branch: git checkout -b gen-1 && git add -A && git commit.
-8. Prime calls Supervisor: POST /spawn {"spec-hash": "sha256:abc...", "generation": 1,
+   Note: Prime MUST NOT perform git operations. Git is Supervisor-managed infrastructure.
+7. Prime calls Supervisor: POST /spawn {"spec-hash": "sha256:abc...", "generation": 1,
    "artifact-path": "/workspace/gen-1"}.
-9. Supervisor creates container, mounts artifact at /workspace, starts Test Rig.
-10. Test Rig:
+   The artifact-path MUST be an absolute path accessible on the host filesystem.
+   The Supervisor maps container paths to host paths via CAMBRIAN_WORKSPACE_ROOT.
+8. Supervisor creates gen-1 branch, commits artifact files from artifact-path,
+   then creates container, mounts artifact at /workspace, starts Test Rig.
+9. Test Rig:
     - Reads manifest.json → entry.build = "pip install -r requirements.txt" → exit 0
     - entry.test = "python -m pytest tests/" → 15 tests, 15 passed → exit 0
     - entry.start = "python src/prime.py" → port 8401 bound in 1.2s
@@ -548,8 +554,9 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
     - GET http://localhost:8401/stats → {"generation": 1, "status": "idle", "uptime": 2}
     - Writes viability-report.json: status=viable
     - Exits 0.
-11. Supervisor reads report, returns to Prime.
-12. Prime sees status=viable. Calls POST /promote {"generation": 1}.
+10. Supervisor reads report, updates generation record, signals outcome to waiting Prime.
+11. Prime polls GET /versions until generation 1 has terminal outcome. Sees status=viable.
+12. Prime calls POST /promote {"generation": 1}.
 13. Supervisor: git merge gen-1, git tag -a gen-1, deletes branch, records outcome=promoted.
 ```
 
@@ -558,7 +565,7 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
 ```
 1. Prime starts generation 2. Calls LLM.
 2. LLM produces code with a syntax error in src/api.py (missing import).
-3. Prime writes files, commits to gen-2 branch.
+3. Prime writes files to /workspace/gen-2/.
 4. Prime calls POST /spawn.
 5. Test Rig:
    - Reads manifest.json
@@ -575,7 +582,7 @@ Produce a manifest.json conforming to the Cambrian artifact manifest contract.
 10. Prime reads failed source code from gen-2-failed tag and diagnostics from
     generation record. Constructs informed retry prompt with spec + failed code
     + structured diagnostics.
-11. LLM produces corrected complete codebase. Prime writes to gen-3 branch.
+11. LLM produces corrected complete codebase. Prime writes to /workspace/gen-3/.
 12. Test Rig passes. Prime promotes gen-3.
 ```
 

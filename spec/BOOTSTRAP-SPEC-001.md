@@ -4,7 +4,10 @@ author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1]
 parent-spec: CAMBRIAN-SPEC-004
+superseded-by: BOOTSTRAP-SPEC-002
 ---
+
+> **Superseded by BOOTSTRAP-SPEC-002.** This document is retained for historical reference only. Do not implement from this spec — use BOOTSTRAP-SPEC-002 instead. Key differences: SPEC-002 adds verification contracts (§2.5), structured diagnostics (§2.6), informed retry (§2.7), and fitness vector (§2.8). The rollback behavior also differs: SPEC-001 deletes the branch without preserving the artifact; SPEC-002 creates a `gen-N-failed` git tag first.
 
 # BOOTSTRAP-SPEC-001
 

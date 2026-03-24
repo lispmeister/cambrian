@@ -178,7 +178,7 @@ app.router.add_post("/rollback", rollback_handler)
 **Generation History:**
 
 - Stored in `generations.json` in the project root (host filesystem).
-- Append-only: new records are appended, existing records MUST NOT be modified.
+- Append-only means no record is ever deleted and no completed record is ever modified. An `in-progress` record is updated exactly once to its terminal state (promoted, failed, timeout) — this lifecycle transition is not a violation of append-only semantics. Once a record has a terminal outcome it is immutable.
 - Schema per CAMBRIAN-SPEC-004 § Generation Record.
 - The file is a JSON array. On startup, if the file doesn't exist, create it with `[]`.
 - Concurrent access is not a concern for M1 (single Prime, sequential generations).
@@ -187,31 +187,51 @@ app.router.add_post("/rollback", rollback_handler)
 
 The Supervisor manages containers using `aiodocker`, an async Docker client that integrates natively with `asyncio`. All container operations are non-blocking — no `run_in_executor` wrappers needed.
 
+**Spawn is asynchronous.** The `spawn_handler` creates the git branch, commits the artifact, creates the container, then returns immediately. The Test Rig runs as a background `asyncio.Task`. Prime polls `GET /versions` until the generation record shows a terminal outcome.
+
 ```python
 import aiodocker
+import asyncio
 
-async def spawn_generation(generation, artifact_path, supervisor_url):
+async def spawn_handler(request):
+    body = await request.json()
+    generation = body["generation"]
+    artifact_path = resolve_artifact_path(body["artifact-path"])  # make absolute
+
+    # Create git branch and commit artifact files (Supervisor owns all git ops)
+    await git("checkout", "-b", f"gen-{generation}")
+    await git("add", "-A", artifact_path)
+    await git("commit", "-m", f"Generation {generation} artifact")
+
+    # Create generation record with in-progress state
+    record = create_generation_record(generation, body)
+    append_generation_record(record)
+
+    container_id = f"lab-gen-{generation}"
+    # Return immediately — Test Rig runs as background task
+    asyncio.create_task(run_test_rig(generation, artifact_path, container_id))
+    return web.json_response({"ok": True, "container-id": container_id, "generation": generation})
+
+async def run_test_rig(generation, artifact_path, container_id):
+    """Background task: run Test Rig, update generation record when done."""
     client = aiodocker.Docker()
     config = {
         "Image": "cambrian-base",
         "Env": [
             f"ANTHROPIC_API_KEY={os.environ['ANTHROPIC_API_KEY']}",
-            f"CAMBRIAN_SUPERVISOR_URL={supervisor_url}",
+            f"CAMBRIAN_SUPERVISOR_URL=http://host.docker.internal:8400",
         ],
         "HostConfig": {
             "Binds": [f"{artifact_path}:/workspace:rw"],
         },
     }
-    container = await client.containers.create_or_replace(
-        name=f"lab-gen-{generation}", config=config
-    )
+    container = await client.containers.create_or_replace(name=container_id, config=config)
     await container.start()
-    # Stream container logs for debugging (stored with generation record)
-    logs = await container.log(stdout=True, stderr=True)
     # Non-blocking wait — event loop remains free for HTTP requests
     await container.wait()
     # Read viability report from mounted volume, update generation record
-    # Attach captured logs to generation record for post-mortem debugging
+    report = read_viability_report(artifact_path)
+    update_generation_record(generation, report)
     await container.delete()
     await client.close()
 ```
@@ -417,7 +437,7 @@ Each contract is a JSON object in the `contracts` array:
 | `expect.body_contains` | MAY | Partial JSON body match. Every key-value pair in `body_contains` MUST appear in the response body. Other keys are ignored. |
 | `expect.body_has_keys` | MAY | Array of strings. Every key MUST be present in the top-level response body object. Values are not checked. |
 
-**Variable substitution:** The string `"$GENERATION"` in any `expect` value is replaced at runtime with the artifact's `generation` number from the manifest. This allows contracts to reference generation-specific values without hard-coding them.
+**Variable substitution:** The string `"$GENERATION"` in any `expect` value is replaced at runtime with the artifact's `generation` number from the manifest. The substitution produces a value of the correct JSON type: when `$GENERATION` appears as a JSON value (not inside a string), it is replaced with the integer (e.g., `0`), not the string `"0"`. When it appears inside a larger string, it is replaced as text. This allows contracts to reference generation-specific values without hard-coding them.
 
 **Evaluation rules:**
 
@@ -1005,12 +1025,27 @@ After Phase 0 is built, run this sequence:
 
 **Who:** Gen-1 Prime (autonomous, observed by human)
 
+**Starting Gen-1 autonomously:** The Supervisor's `/spawn` endpoint creates Test Rig containers, not Prime containers. To start Gen-1 Prime for autonomous reproduction, the human runs it directly via Docker:
+
+```bash
+docker run --rm \
+  -v "$(pwd)/workspace:/workspace" \
+  -v "$(pwd)/spec:/workspace/spec:ro" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e CAMBRIAN_SUPERVISOR_URL="http://host.docker.internal:8400" \
+  --add-host host.docker.internal:host-gateway \
+  --entrypoint python \
+  cambrian-base /workspace/src/prime.py
+```
+
+Adjust the `--entrypoint` and source path to match where Gen-1's entrypoint lives in the artifact. In M2+, the Supervisor may gain a `/start` endpoint for this, but for M1 the bootstrap is an explicitly human-supervised process.
+
 **Steps:**
-1. Start Gen-1 Prime in a container with the full genome spec
-2. Gen-1 reads the spec, calls an LLM, generates Gen-2
-3. Gen-2 is spawned and tested by the Test Rig
-4. If viable: promote Gen-2
-5. Start Gen-2 Prime with the Minimal Spec
+1. Start Gen-1 Prime in a container with the full genome spec (see above)
+2. Gen-1 reads the spec, calls an LLM, generates Gen-2 into `/workspace/gen-2/`
+3. Gen-1 calls POST /spawn; Supervisor creates branch, runs Test Rig
+4. If viable: Gen-1 calls POST /promote
+5. Human starts Gen-2 Prime with the Minimal Spec path configured
 6. Gen-2 generates Gen-3 (echo server)
 7. Gen-3 is spawned and tested
 8. If viable: M1 is complete
