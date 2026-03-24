@@ -34,7 +34,7 @@ lab-journal/
 
 ## Implementation Language
 
-Python 3.14 free-threaded build (`python3.14t`) for everything in M1. See BOOTSTRAP-SPEC-002 § Implementation Language for full details.
+Python 3.14 for M1 (free-threaded build deferred to M2). See BOOTSTRAP-SPEC-002 § Implementation Language for full details.
 
 ## Tech Stack
 

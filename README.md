@@ -8,7 +8,14 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 ## Status
 
-**Design phase — no running code yet.** All specs are complete. Next step: build the Supervisor and Test Rig (Phase 0), then generate Gen-1 Prime from the genome spec.
+**Stage 2 ready — Gen-1 promoted, awaiting autonomous reproduction.**
+
+What's done:
+- Phase 0: Supervisor, Test Rig, Docker image, gen-0 validated end-to-end
+- Stage 1: Gen-1 Prime written (human + Claude Code), passes Test Rig (34 tests, all green)
+- Code review: 12 issues found and fixed across spec, infrastructure, and Gen-1
+
+Next: start Gen-1 in a container, it autonomously produces Gen-2 via LLM (Sonnet). Then Gen-2 produces Gen-3. Gen-3 passing the Test Rig = M1 complete.
 
 ## The Idea
 
@@ -37,46 +44,67 @@ Three components:
        │ writes artifact     │ promotes/rolls back  │ writes report
 ```
 
+## Repos
+
+| Repo | Purpose |
+|------|---------|
+| [cambrian](https://github.com/lispmeister/cambrian) | Specs, Supervisor, Test Rig, Docker, lab journal |
+| [cambrian-artifacts](https://github.com/lispmeister/cambrian-artifacts) | Generated artifacts (gen-0, gen-1, ...) and generation history |
+
 ## Milestones
 
-- **M1: Reproduce.** Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. This is the immediate goal.
+- **M1: Reproduce.** Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. Gen-3 passing = M1 complete.
 - **M2: Self-modify.** Prime mutates its own spec and tests whether the mutation produces fitter offspring.
 
 ## Tech Stack
 
-Everything is Python 3.14t (free-threaded, GIL disabled) for M1.
+Everything is Python 3.14 for M1 (free-threaded build deferred to M2).
 
 | Component | Key Libraries |
 |-----------|--------------|
 | Async I/O | `aiohttp`, `aiodocker`, `asyncio` |
 | Validation | `pydantic` v2 (all I/O boundaries) |
 | Logging | `structlog` (JSON in containers, key-value in dev) |
-| Type checking | `pyright` strict mode, zero errors in CI |
-| Tooling | `uv`, `ruff`, `pytest` + `pytest-asyncio` |
-| Introspection | `rich`, `devtools`, `typing-inspect` |
+| Type checking | `pyright` strict mode |
+| Tooling | `uv`, `ruff`, `pytest` + `pytest-asyncio` + `pytest-aiohttp` |
 
 ## Project Structure
 
 ```
 spec/
-  CAMBRIAN-SPEC-004.md     — System spec (contracts, schemas, lifecycle)
   CAMBRIAN-SPEC-005.md     — Genome spec (what Prime is — consumed by LLM)
   BOOTSTRAP-SPEC-002.md    — Bootstrap spec (Supervisor, Test Rig, Docker)
-  BOOTSTRAP-SPEC-001.md    — Bootstrap spec v1 (superseded by 002)
   SPEC-STYLE-GUIDE.md      — How to write specs
-  diagrams/                — Architecture and sequence diagrams (.mmd)
+  archive/                 — Superseded specs (historical reference only)
+supervisor/                — Host-side Supervisor (aiohttp server)
+test-rig/                  — Mechanical verification pipeline
+docker/                    — Dockerfile and build script for cambrian-base
 lab-journal/               — Discussion and decision logs
-scripts/
-  setup-dev.sh             — Developer environment setup
-  setup-claude.sh          — Claude Code plugins and skills setup
 ```
 
-## Getting Started
+## Quick Start
 
 ```bash
+# Clone both repos
 git clone https://github.com/lispmeister/cambrian.git
+git clone https://github.com/lispmeister/cambrian-artifacts.git
+
+# Build Docker image
 cd cambrian
-./scripts/setup-dev.sh
+./docker/build.sh
+
+# Start Supervisor
+uv run python -m supervisor
+
+# Start Gen-1 (in another terminal)
+docker run --rm \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e CAMBRIAN_SUPERVISOR_URL="http://host.docker.internal:8400" \
+  -e CAMBRIAN_GENERATION=1 \
+  -e CAMBRIAN_MODEL="claude-sonnet-4-6" \
+  -v "$(pwd)/../cambrian-artifacts/gen-1:/workspace" \
+  --add-host host.docker.internal:host-gateway \
+  cambrian-base
 ```
 
 See [CLAUDE.md](CLAUDE.md) for development conventions and issue tracking workflow.
