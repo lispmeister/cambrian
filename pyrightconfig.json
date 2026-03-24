@@ -1,0 +1,8 @@
+{
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "strict",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "include": ["supervisor", "test-rig"],
+  "exclude": ["**/__pycache__"]
+}
