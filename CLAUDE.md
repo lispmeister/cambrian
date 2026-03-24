@@ -15,6 +15,10 @@ A self-reproducing code factory. See [README.md](README.md) for project goals, [
 
 DO NOT MODIFY the test rig's viability report schema or the Supervisor HTTP API contracts without explicit user approval. These are the fixed points that allow components to communicate across generations. They are defined in CAMBRIAN-SPEC-005 and BOOTSTRAP-SPEC-002.
 
+## Archived Specs
+
+`spec/archive/` contains superseded specs (CAMBRIAN-SPEC-001 through 004, BOOTSTRAP-SPEC-001). These are retained for historical reference ONLY. Never reference, analyze, quote from, or generate code from archived specs. All active contracts, schemas, and implementation guidance live exclusively in CAMBRIAN-SPEC-005 and BOOTSTRAP-SPEC-002.
+
 ## Project Structure
 
 ```
