@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.2.0
+version: 0.3.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -116,7 +116,7 @@ All components — Supervisor, Test Rig, and Prime — MUST use `structlog` for 
 
 ### Asyncio by default
 
-All I/O-bound code MUST use `asyncio`. The Supervisor uses `asyncio` for its HTTP server and container lifecycle management. Prime uses `asyncio` to issue concurrent LLM calls — for example, generating subsystems in parallel when the spec permits it. Combined with free-threaded Python 3.14t, this gives both cooperative concurrency (asyncio) for I/O and true parallelism (threads) for CPU work. The Test Rig is the exception — it runs a sequential pipeline and does not need asyncio.
+All I/O-bound code MUST use `asyncio`. The Supervisor uses `asyncio` for its HTTP server and container lifecycle management. Prime uses `asyncio` to issue concurrent LLM calls — for example, generating subsystems in parallel when the spec permits it. The Test Rig is the exception — it runs a sequential pipeline and does not need asyncio. Free-threaded Python (3.14t) is deferred to M2.
 
 ### One Dockerfile, parameterized
 
@@ -149,8 +149,8 @@ Implements the following HTTP API (Prime calls these endpoints via CAMBRIAN-SPEC
 | GET    | /stats     | JSON: current generation, status, uptime |
 | GET    | /versions  | JSON: array of all generation records |
 | POST   | /spawn     | Create container, mount artifact, run Test Rig |
-| POST   | /promote   | Merge gen-N branch to main, create annotated tag |
-| POST   | /rollback  | Delete gen-N branch, record failure |
+| POST   | /promote   | Merge gen-N branch to main in artifacts repo, create annotated tag |
+| POST   | /rollback  | Create gen-N-failed tag in artifacts repo, delete branch, record failure |
 
 ### 1.3 Implementation Details
 
@@ -271,31 +271,26 @@ async def run_test_rig(generation, artifact_path, container_id):
 
 **Git Operations:**
 
-The Supervisor operates on a git repository in the project root. Git commands run via `asyncio.create_subprocess_exec` to stay non-blocking. No `gitpython` dependency — git CLI is universally available and the operations are simple.
+The Supervisor operates on the **artifacts repository** (path from `CAMBRIAN_ARTIFACTS_ROOT`), not the Cambrian project repo. Generated artifacts live in a separate git repo to keep the project repo clean. Git commands run as subprocesses, always with `cwd` set to the artifacts repo root. No `gitpython` dependency — git CLI is universally available and the operations are simple.
 
-```python
-async def git(*args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise GitError(stderr.decode())
-    return stdout.decode()
+The `git()` helper takes `*args` and a `cwd` keyword argument pointing to the artifacts repo root. All git commands operate in that directory.
 
-# promote:
-#   1. await git("merge", "gen-N", "--no-ff", "-m", "Promote generation N")
-#   2. await git("tag", "-a", f"gen-{n}", "-m", f"Generation {n} promoted")
-#   3. await git("branch", "-d", f"gen-{n}")
-#   4. Update generation record: outcome=promoted
+Promote sequence (artifacts repo):
+1. `git checkout -b gen-N` — create branch for the artifact
+2. `git add -A` — stage artifact files
+3. `git commit -m "Generation N artifact"` — commit
+4. `git checkout main` — return to main
+5. `git merge gen-N --no-ff -m "Promote generation N"` — merge
+6. `git tag -a gen-N -m "Generation N promoted"` — annotated tag
+7. `git branch -d gen-N` — delete branch
+8. Update generation record: `outcome=promoted`, `artifact_ref="gen-N"`
 
-# rollback:
-#   1. await git("tag", "-a", f"gen-{n}-failed", "-m", f"Generation {n} failed")
-#   2. await git("branch", "-D", f"gen-{n}")
-#   3. Update generation record: outcome=failed, artifact_ref=f"gen-{n}-failed"
-```
+Rollback sequence (artifacts repo):
+1. `git tag -a gen-N-failed -m "Generation N failed"` — preserve artifact
+2. `git branch -D gen-N` — delete branch
+3. Update generation record: `outcome=failed`, `artifact_ref="gen-N-failed"`
+
+`artifacts_root = os.environ.get("CAMBRIAN_ARTIFACTS_ROOT", "../cambrian-artifacts")`
 
 **Status Tracking:**
 
@@ -772,7 +767,7 @@ For non-viable reports, fitness includes partial metrics from completed stages. 
 A single Dockerfile produces the `cambrian-base` image used by all containers.
 
 ```dockerfile
-FROM python:3.14t-slim
+FROM python:3.14-slim
 
 # Create virtual environment (activated for all subsequent commands)
 RUN python -m venv /venv
@@ -790,7 +785,7 @@ ENTRYPOINT ["python", "/test-rig/test_rig.py"]
 
 **Notes:**
 
-- `python:3.14t-slim` is the free-threaded Python 3.14 image (GIL disabled, PEP 779). Chosen for true multithreading support with ~5-10% single-threaded overhead. The `t` suffix denotes the free-threaded build.
+- `python:3.14-slim` is the standard Python 3.14 image. Free-threaded build (3.14t) is deferred to M2.
 - A virtual environment at `/venv` is created at image build time and activated via `PATH`. All `pip install` commands (including `entry.build`) install into `/venv`, never the system Python.
 - The Test Rig is baked in so every container can verify artifacts without additional setup.
 - When running Prime (not the Test Rig), the entrypoint is overridden: `docker run --entrypoint python cambrian-base src/prime.py`.
@@ -836,7 +831,7 @@ The artifact directory is bind-mounted at `/workspace`:
 
 ```
 docker/
-  Dockerfile         — Base image (Python 3.14t-slim + Test Rig)
+  Dockerfile         — Base image (Python 3.14-slim + Test Rig)
   build.sh           — Build the cambrian-base image
 ```
 
@@ -852,14 +847,19 @@ The test artifact proves:
 - Docker networking, credential injection, and workspace mounting work correctly
 - Promote and rollback git operations work
 
-### 4.2 Contents
+### 4.2 Location
+
+The test artifact lives in the **artifacts repository** as `gen-0/`. It is the zeroth generation — hand-crafted, not LLM-generated. The artifacts repo is separate from the Cambrian project repo and is initialized during Phase 0.
+
+### 4.3 Contents
 
 ```
-test-artifact/
-  manifest.json       — Valid manifest pointing to the test server
-  src/server.py       — Trivial HTTP server: /health → 200, /stats → JSON
-  tests/test_server.py — pytest tests for both endpoints
-  requirements.txt    — Empty (stdlib only)
+cambrian-artifacts/   ← separate git repo (CAMBRIAN_ARTIFACTS_ROOT)
+  gen-0/
+    manifest.json       — Valid manifest pointing to the test server
+    src/server.py       — Trivial HTTP server: /health → 200, /stats → JSON
+    tests/test_server.py — pytest: GET /health, assert 200
+    requirements.txt    — Empty (stdlib only)
 ```
 
 **manifest.json:**
@@ -1018,14 +1018,14 @@ After Phase 0 is built, run this sequence:
 2. Start Supervisor:          python supervisor/supervisor.py
 3. Spawn test artifact:       curl -X POST http://localhost:8400/spawn \
                                 -H "Content-Type: application/json" \
-                                -d '{"spec-hash":"sha256:000...","generation":0,"artifact-path":"test-artifact"}'
+                                -d '{"spec-hash":"sha256:000...","generation":0,"artifact-path":"gen-0"}'
 4. Wait for container to exit
-5. Check viability report:    cat test-artifact/viability-report.json
+5. Check viability report:    cat $CAMBRIAN_ARTIFACTS_ROOT/gen-0/viability-report.json
    → Expect: status=viable, all checks passed
 6. Promote:                   curl -X POST http://localhost:8400/promote \
                                 -H "Content-Type: application/json" \
                                 -d '{"generation":0}'
-7. Verify git:                git tag → gen-0 exists
+7. Verify git:                git -C $CAMBRIAN_ARTIFACTS_ROOT tag → gen-0 exists
 8. Rollback test:             Re-spawn, then rollback instead of promote
    → Verify branch deleted, record shows outcome=failed
 ```
@@ -1043,7 +1043,7 @@ After Phase 0 is built, run this sequence:
 4. Implement the Supervisor (`supervisor/supervisor.py`)
 5. Implement the Test Rig (`test-rig/test_rig.py`)
 6. Create the Dockerfile (`docker/Dockerfile`)
-7. Create the test artifact (`test-artifact/`)
+7. Initialize the artifacts repo and create gen-0 (the test artifact)
 8. Build the Docker image
 9. Run the test artifact through the full pipeline
 10. Fix any issues until the test artifact passes end-to-end
@@ -1063,7 +1063,7 @@ After Phase 0 is built, run this sequence:
 6. Fix issues, regenerate if needed
 7. Promote as Gen-1
 
-**Done when:** Gen-1 Prime passes the Test Rig and is promoted. `git tag gen-1` exists. Generation record shows `outcome: promoted`.
+**Done when:** Gen-1 Prime passes the Test Rig and is promoted. `git -C $CAMBRIAN_ARTIFACTS_ROOT tag` shows `gen-1`. Generation record shows `outcome: promoted`.
 
 ### Stage 2: Verify Reproduction
 
@@ -1134,40 +1134,44 @@ In Stage 2, after Gen-2 Prime is promoted, set `CAMBRIAN_SPEC_PATH` to point to 
 ## 7. Project Directory Structure
 
 
-After bootstrap is complete:
+After bootstrap is complete, two sibling repos exist:
 
 ```
-cambrian/
+cambrian/                       ← project repo (this repo)
   supervisor/
-    supervisor.py         — Supervisor HTTP server
-    test_supervisor.py    — Supervisor unit tests
+    supervisor.py               — Supervisor HTTP server
+    test_supervisor.py          — Supervisor unit tests
   test-rig/
-    test_rig.py           — Test Rig verification pipeline
-    test_test_rig.py      — Test Rig unit tests
+    test_rig.py                 — Test Rig verification pipeline
+    test_test_rig.py            — Test Rig unit tests
   docker/
-    Dockerfile            — Base image
-    build.sh              — Image build script
-  test-artifact/
-    manifest.json         — Hand-crafted test manifest
-    src/server.py         — Trivial test server
-    tests/test_server.py  — Test server tests
-    requirements.txt      — Empty
+    Dockerfile                  — Base image
+    build.sh                    — Image build script
   spec/
-    CAMBRIAN-SPEC-005.md  — Genome spec (Prime definition)
-    BOOTSTRAP-SPEC-002.md — This document
-    SPEC-STYLE-GUIDE.md   — Spec writing guide
-    diagrams/             — Architecture and sequence diagrams
-    archive/              — Superseded specs (SPEC-001 through 004, BOOTSTRAP-SPEC-001)
+    CAMBRIAN-SPEC-005.md        — Genome spec (Prime definition)
+    BOOTSTRAP-SPEC-002.md       — This document
+    SPEC-STYLE-GUIDE.md         — Spec writing guide
+    diagrams/                   — Architecture and sequence diagrams
+    archive/                    — Superseded specs (SPEC-001 through 004, BOOTSTRAP-SPEC-001)
   lab-journal/
-    journal-*.md          — Discussion and decision logs
-  generations.json        — Generation history (created at runtime)
-  pyproject.toml          — Project metadata, dependencies, tool configs (ruff, pyright)
-  uv.lock                 — Locked dependency versions (committed)
-  .venv/                  — Host-side virtual environment (not committed)
-  .env                    — ANTHROPIC_API_KEY (not committed)
-  pyrightconfig.json      — Pyright strict mode configuration
+    journal-*.md                — Discussion and decision logs
+  pyproject.toml                — Project metadata, dependencies, tool configs (ruff, pyright)
+  uv.lock                       — Locked dependency versions (committed)
+  .venv/                        — Host-side virtual environment (not committed)
+  .env                          — ANTHROPIC_API_KEY (not committed)
+  pyrightconfig.json            — Pyright strict mode configuration
   README.md
   CLAUDE.md
+
+cambrian-artifacts/             ← artifacts repo (CAMBRIAN_ARTIFACTS_ROOT, separate git repo)
+  gen-0/                        — Hand-crafted test artifact (generation 0)
+    manifest.json
+    src/server.py
+    tests/test_server.py
+    requirements.txt
+  gen-1/                        — LLM-generated Prime (created during Stage 1)
+  gen-2/                        — Created by Gen-1 Prime autonomously
+  generations.json              — Generation history (append-only, managed by Supervisor)
 ```
 
 ## 8. Configuration
@@ -1180,7 +1184,7 @@ All configuration is via environment variables on the host.
 | `CAMBRIAN_SUPERVISOR_PORT` | MAY | `8400` | Supervisor listen port |
 | `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://host.docker.internal:8400` | Supervisor URL passed to containers |
 | `CAMBRIAN_DOCKER_IMAGE` | MAY | `cambrian-base` | Docker image name |
-| `CAMBRIAN_WORKSPACE_ROOT` | MAY | `.` | Root directory for artifacts and git |
+| `CAMBRIAN_ARTIFACTS_ROOT` | MAY | `../cambrian-artifacts` | Path to artifacts repository (separate git repo) |
 
 ## 9. Failure Modes
 
@@ -1195,7 +1199,7 @@ All configuration is via environment variables on the host.
 | Artifact path doesn't exist | `/spawn` with invalid path | `{"ok": false, "error": "Artifact path does not exist: /path"}` |
 | Container fails to start | `await client.containers.create_or_replace()` raises `DockerError` | `{"ok": false, "error": "Container creation failed: ..."}` |
 | Viability report missing | Container exits without writing report | Generation record: `outcome: failed`, viability: `null`. Container logs are still captured for debugging. |
-| Git branch conflict | gen-N branch already exists | `/spawn` returns error. Caller must rollback the existing gen-N first. |
+| Git branch conflict | gen-N branch already exists in artifacts repo | `/spawn` returns error. Caller must rollback the existing gen-N first. |
 | Contract check failure | HTTP contract returns unexpected status/body | Test Rig records `failure_stage: health`. All contracts are still evaluated; per-contract results included in viability report. |
 | Malformed contracts | `contracts` array contains invalid contract objects | Test Rig records `failure_stage: manifest`. Contract schema is validated during manifest parsing. |
 | Pytest output unparseable | Test output doesn't match expected patterns | `diagnostics.failures` is empty array. `stdout_tail` and `stderr_tail` still capture raw output. No information lost, just unstructured. |
@@ -1211,8 +1215,8 @@ All configuration is via environment variables on the host.
 - `POST /spawn` with test artifact creates a Docker container
 - Container runs the Test Rig to completion
 - Test Rig writes valid `viability-report.json`
-- `POST /promote` merges branch and creates git tag
-- `POST /rollback` deletes branch and records failure
+- `POST /promote` merges branch and creates annotated tag in the artifacts repo
+- `POST /rollback` creates a `gen-N-failed` tag and deletes the branch in the artifacts repo
 - `GET /versions` returns all generation records
 - Generation records are append-only (re-running doesn't overwrite)
 - Supervisor rejects spawn when Docker image is missing
@@ -1276,7 +1280,7 @@ spec-version: "002"
 version: "0.2.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
-language: "python 3.14t"
+language: "python 3.14"
 ```
 
 ---

@@ -207,7 +207,7 @@ Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
 | Unparseable LLM output | LLM returns malformed or incomplete `<file>` blocks | Record failed attempt. Retry with fresh LLM call (up to `CAMBRIAN_MAX_RETRIES`). |
 | Build failure | `entry.build` exits non-zero | Non-viable verdict from Test Rig. Rollback, then retry as informed retry. |
 | Test failure | `entry.test` exits non-zero | Non-viable verdict. Rollback, then retry. |
-| Start timeout | Prime doesn't bind HTTP port within 30s | Non-viable verdict. Rollback, then retry. |
+| Start timeout | Prime doesn't bind HTTP port within 10s | Non-viable verdict. Rollback, then retry. |
 | Health check failure | `GET /health` returns non-200 | Non-viable verdict. Rollback, then retry. |
 | Supervisor unreachable | Network error on any Supervisor call | Exponential backoff: 1s, 2s, 4s, 8s, 16s, then 60s ceiling. Do not proceed without verification — never self-promote. |
 | LLM rate-limited | HTTP 429 from LLM API | Respect `retry-after` header. Pause and retry. Do not count as a generation failure. |
@@ -314,7 +314,7 @@ Prime reads the failed source code via `git show gen-{N-1}-failed:{path}` for ea
 
 ### Language and runtime
 
-- Python 3.14 free-threaded build (`python3.14t`)
+- Python 3.14 (free-threaded build deferred to M2)
 - All I/O-bound code MUST use `asyncio`
 - HTTP server: `aiohttp`
 - HTTP client (for Supervisor API and LLM calls): `aiohttp.ClientSession`
@@ -421,10 +421,10 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ```yaml
 spec-version: "005"
-version: "0.5.0"
+version: "0.5.1"
 organism: "cambrian"
 lineage: "genesis"
-language: "python 3.14t (M1)"
+language: "python 3.14 (M1)"
 ```
 
 ---
