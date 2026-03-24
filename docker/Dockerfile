@@ -8,7 +8,7 @@ RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 # Install Test Rig dependencies
-RUN pip install --no-cache-dir aiohttp pytest pytest-asyncio
+RUN pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp
 
 # Bake in the Test Rig
 COPY test-rig/test_rig.py /test-rig/test_rig.py
