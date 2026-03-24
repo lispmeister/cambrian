@@ -94,6 +94,18 @@ async def handle_spawn(request: web.Request) -> web.Response:
 
     container_id = f"lab-gen-{generation}"
 
+    # Create branch and commit artifact in artifacts repo before starting container
+    try:
+        await git_ops.ensure_on_main()
+        await git_ops.git("checkout", "-b", f"gen-{generation}")
+        await git_ops.git("add", "-A")
+        await git_ops.git(
+            "commit", "--allow-empty",
+            "-m", f"Generation {generation} artifact",
+        )
+    except git_ops.GitError as e:
+        return web.json_response({"ok": False, "error": f"Git error: {e}"}, status=500)
+
     # Record in-progress state
     record: dict[str, Any] = {
         "generation": generation,
@@ -101,7 +113,7 @@ async def handle_spawn(request: web.Request) -> web.Response:
         "spec-hash": body.get("spec-hash", ""),
         "artifact-hash": "",
         "outcome": "in_progress",
-        "artifact_ref": artifact_rel,
+        "artifact_ref": f"gen-{generation}",
         "created": datetime.now(timezone.utc).isoformat(),
         "completed": None,
         "container-id": container_id,
@@ -186,14 +198,27 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
         if report_path.exists():
             with report_path.open() as f:
                 viability = json.load(f)
-            outcome = "promoted" if viability.get("status") == "viable" else "failed"
+            viable = viability.get("status") == "viable"
         else:
             viability = None
-            outcome = "failed"
+            viable = False
             log.warning("viability_report_missing", generation=generation)
 
-        generations.update(generation, outcome=outcome, viability=viability)
-        log.info("test_rig_complete", generation=generation, outcome=outcome)
+        # Auto-promote or rollback in artifacts repo
+        try:
+            if viable:
+                tag = await git_ops.promote(generation, artifact_path)
+                outcome = "promoted"
+            else:
+                tag = await git_ops.rollback(generation)
+                outcome = "failed"
+        except git_ops.GitError as e:
+            log.error("git_ops_error", generation=generation, error=str(e))
+            tag = f"gen-{generation}"
+            outcome = "failed"
+
+        generations.update(generation, outcome=outcome, viability=viability, artifact_ref=tag)
+        log.info("test_rig_complete", generation=generation, outcome=outcome, tag=tag)
 
         await container.delete()
     except Exception as e:

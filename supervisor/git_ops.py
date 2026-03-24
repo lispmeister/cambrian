@@ -37,9 +37,7 @@ async def promote(generation: int, artifact_path: Path) -> str:
     branch = f"gen-{generation}"
     tag = f"gen-{generation}"
 
-    await git("checkout", "-b", branch)
-    await git("add", "-A")
-    await git("commit", "-m", f"Generation {generation} artifact")
+    # Branch was already created and committed in spawn_handler — just switch to main
     await git("checkout", "main")
     await git("merge", branch, "--no-ff", "-m", f"Promote generation {generation}")
     await git("tag", "-a", tag, "-m", f"Generation {generation} promoted")
