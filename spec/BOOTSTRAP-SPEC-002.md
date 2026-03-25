@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.5.0
+version: 0.6.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -544,9 +544,9 @@ The `contracts` field is an optional extension to the Artifact Manifest schema (
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `contracts` | MAY | Array of contract objects. If absent, Test Rig uses hard-coded health checks. If present, Test Rig evaluates each contract during the health-check stage. |
+| `contracts` | SHOULD | Array of contract objects. If absent, Test Rig uses hard-coded health checks. If present, Test Rig evaluates each contract during the health-check stage and does not supplement with hard-coded checks. |
 
-This is a backward-compatible extension — no existing MUST fields change, no existing behavior changes when the field is absent. The extension SHOULD be incorporated into CAMBRIAN-SPEC-005 (the genome spec) so that LLM-generated organisms declare their contracts explicitly.
+This is a backward-compatible extension — no existing MUST fields change, no existing behavior changes when the field is absent. This extension is incorporated into CAMBRIAN-SPEC-005 § Artifact Manifest (contracts are a SHOULD field in the genome spec).
 
 ### 2.6 Structured Diagnostics
 
@@ -663,7 +663,7 @@ The `diagnostics` field is an optional extension to the Viability Report schema 
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `diagnostics` | MAY | Object. Present when `status` is `non-viable`. Contains structured failure context for the failed stage. |
+| `diagnostics` | MUST when `non-viable` | Object. Present when `status` is `non-viable`, absent otherwise. Contains structured failure context for the failed stage. |
 
 This is a backward-compatible extension — no existing MUST fields change. When `status` is `viable`, `diagnostics` is absent and existing report consumers are unaffected.
 
@@ -1160,17 +1160,23 @@ The server MUST:
 - Respond with Content-Type: application/json
 - Include a test suite that verifies all three endpoints
 
-This server does NOT implement /stats. Produce a manifest.json conforming to the
-Cambrian artifact manifest contract. Include a contracts array declaring the health
-and echo endpoints (the Test Rig uses contracts for health verification; without
-them it falls back to a /stats check this server does not implement):
+This server does NOT implement /stats.
+```
 
+The contracts block below is parsed by Prime and included verbatim in manifest.json
+(see CAMBRIAN-SPEC-005 § The Generation Loop step 6). This is required because the
+echo server has no /stats endpoint and the fallback health check would fail without
+contracts.
+
+```contracts
+[
   {"name": "health", "type": "http", "method": "GET", "path": "/health",
    "expect": {"status": 200, "body": {"ok": true}}},
   {"name": "echo-valid", "type": "http", "method": "GET", "path": "/echo?msg=hello",
    "expect": {"status": 200, "body_contains": {"echo": "hello"}}},
   {"name": "echo-missing", "type": "http", "method": "GET", "path": "/echo",
    "expect": {"status": 400}}
+]
 ```
 
 ### How to Use
@@ -1231,6 +1237,7 @@ All configuration is via environment variables on the host.
 | `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://host.docker.internal:8400` | Supervisor URL passed to containers |
 | `CAMBRIAN_DOCKER_IMAGE` | MAY | `cambrian-base` | Docker image name |
 | `CAMBRIAN_ARTIFACTS_ROOT` | MAY | `../cambrian-artifacts` | Path to artifacts repository (separate git repo) |
+| `CAMBRIAN_CONTAINER_TIMEOUT` | MAY | `600` | Max seconds to wait for the Test Rig container to exit. On timeout, container is killed and generation record is set to `outcome: timeout`. |
 
 ## 9. Failure Modes
 
@@ -1323,7 +1330,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.5.0"
+version: "0.6.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

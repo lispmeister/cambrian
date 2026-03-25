@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.7.0
+version: 0.8.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
 ---
 
@@ -58,7 +58,7 @@ Prime MUST serve these endpoints on port 8401:
 
 ### Supervisor HTTP API (Prime calls these)
 
-The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://localhost:8400`).
+The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://host.docker.internal:8400`). Note: Prime runs inside a Docker container, so `localhost` refers to the container itself — `host.docker.internal` is required to reach the Supervisor on the host.
 
 | Method | Path | Request Body | Success Response |
 |--------|------|-------------|-----------------|
@@ -69,6 +69,21 @@ The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://lo
 | POST | `/rollback` | `{"generation": N}` | `{"ok": true, "generation": N}` |
 
 All POST endpoints return `{"ok": false, "error": "..."}` on failure.
+
+**GenerationRecord schema** (returned by `GET /versions` as an array):
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer >= 1. The generation number. |
+| `parent` | MUST | Integer >= 0. Parent generation (0 for bootstrap). |
+| `spec-hash` | MUST | SHA-256 hex of the spec file (with `sha256:` prefix). |
+| `artifact-hash` | MUST | SHA-256 hex of the artifact files (with `sha256:` prefix). |
+| `outcome` | MUST | One of: `in_progress`, `tested`, `promoted`, `failed`, `timeout`. `in_progress` while the Test Rig runs. `tested` once the Test Rig exits (Prime then calls /promote or /rollback). Terminal states: `promoted`, `failed`, `timeout`. |
+| `viability` | MAY | The full viability report. Present once outcome is `tested` or terminal. Absent while `in_progress`. |
+| `artifact_ref` | MAY | Git ref (tag) pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for failed. Absent while `in_progress`. |
+| `created` | MUST | ISO-8601 timestamp (when spawn was received). |
+| `completed` | MAY | ISO-8601 timestamp. Absent while `in_progress`. |
+| `container-id` | MUST | Name of the Test Rig Docker container. |
 
 `POST /spawn` is asynchronous — it starts the Test Rig and returns immediately. Prime polls `GET /versions` until the generation record's outcome is no longer `in_progress` (see [Generation Loop](#the-generation-loop) step 8).
 
@@ -163,11 +178,12 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 ## The Generation Loop
 
 ```
-start → [read spec + history] → [call LLM] → [parse + write files] → [build manifest]
-       → [POST /spawn] → [poll until outcome != in_progress]
-       → [read viability report] → promote or rollback
-       → if rollback and retries left: [read failed code + diagnostics] → [call LLM again]
-       → if rollback and no retries: stop
+[1: determine gen#] → [2: read spec] → [3: build prompt] → [4: call LLM]
+→ [5: parse response] → [6: write files + manifest] → [7: POST /spawn]
+→ [8: poll until outcome != in_progress]
+→ [9: decide: promote or rollback]
+→ if rollback + retries: [read failed code + diagnostics] → back to step 3
+→ if rollback + no retries: stop
 ```
 
 ### Step by step
@@ -182,7 +198,7 @@ start → [read spec + history] → [call LLM] → [parse + write files] → [bu
 
 5. **Parse the response.** Extract files from `<file path="...">content</file>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
 
-6. **Write files to workspace.** Create a directory for the artifact. Write all parsed files. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata.
+6. **Write files to workspace.** Create a directory for the artifact. Write all parsed files. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata. If the spec file contains a JSON array under a fenced code block marked with `contracts` (e.g., ` ```contracts `) include that array verbatim as the `contracts` field in `manifest.json`. This is how spec-defined contracts propagate to the manifest without passing through the LLM.
 
 7. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git.
 
@@ -375,7 +391,7 @@ Tests MUST be runnable with `python -m pytest tests/ -v`.
 | `CAMBRIAN_MODEL` | MAY | `claude-opus-4-6` | LLM model for generation |
 | `CAMBRIAN_MAX_GENS` | MAY | `5` | Max generation attempts before stopping |
 | `CAMBRIAN_MAX_RETRIES` | MAY | `3` | Max consecutive failures before stopping |
-| `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://localhost:8400` | Supervisor endpoint |
+| `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://host.docker.internal:8400` | Supervisor endpoint (Prime runs in a container; use `host.docker.internal` to reach the host) |
 | `CAMBRIAN_SPEC_PATH` | MAY | `./spec/CAMBRIAN-SPEC-005.md` | Path to spec file |
 | `CAMBRIAN_TOKEN_BUDGET` | MAY | `0` | Max cumulative tokens (0 = unlimited) |
 
@@ -421,7 +437,7 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ```yaml
 spec-version: "005"
-version: "0.7.0"
+version: "0.8.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
