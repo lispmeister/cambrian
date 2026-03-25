@@ -6,3 +6,4 @@
 # other private files
 .claude
 tmp
+.env
