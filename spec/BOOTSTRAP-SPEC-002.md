@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.4.0
+version: 0.5.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -152,6 +152,30 @@ Implements the following HTTP API (Prime calls these endpoints via CAMBRIAN-SPEC
 | POST   | /promote   | Merge gen-N branch to main in artifacts repo, create annotated tag |
 | POST   | /rollback  | Create gen-N-failed tag in artifacts repo, delete branch, record failure |
 
+All POST endpoints return `{"ok": false, "error": "..."}` on failure.
+
+**Request/response schemas:**
+
+`GET /stats` → `{"generation": N, "status": "idle|spawning|testing|promoting|rolling-back", "uptime": S}`
+- `generation`: highest completed generation number (0 if none)
+- `uptime`: integer seconds since Supervisor start
+
+`GET /versions` → array of all GenerationRecord objects (see Generation Record schema below)
+
+`POST /spawn` request fields:
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `generation` | MUST | Integer. The generation number being produced. |
+| `artifact-path` | MUST | String. Absolute host-side path to the artifact directory. |
+| `spec-hash` | MUST | String. SHA-256 hex of the spec file (with `sha256:` prefix). |
+
+`POST /spawn` response: `{"ok": true, "container-id": "lab-gen-N", "generation": N}`
+
+`POST /promote` request: `{"generation": N}` → response: `{"ok": true, "generation": N}`
+
+`POST /rollback` request: `{"generation": N}` → response: `{"ok": true, "generation": N}`
+
 ### 1.3 Implementation Details
 
 **HTTP Server:**
@@ -178,7 +202,7 @@ app.router.add_post("/rollback", rollback_handler)
 **Generation History:**
 
 - Stored in `generations.json` in the artifacts repo root (`CAMBRIAN_ARTIFACTS_ROOT/generations.json`).
-- Append-only means no record is ever deleted and no completed record is ever modified. An `in-progress` record is updated exactly once to its terminal state (promoted, failed, timeout) — this lifecycle transition is not a violation of append-only semantics. Once a record has a terminal outcome it is immutable.
+- Append-only means no record is ever deleted and no completed record is ever modified. An `in_progress` record is updated exactly once to its terminal state (promoted, failed, timeout) — this lifecycle transition is not a violation of append-only semantics. Once a record has a terminal outcome it is immutable.
 - The file is a JSON array. On startup, if the file doesn't exist, create it with `[]`.
 - Concurrent access is not a concern for M1 (single Prime, sequential generations).
 
@@ -209,12 +233,12 @@ app.router.add_post("/rollback", rollback_handler)
 | `parent` | MUST | Integer >= 0. |
 | `spec-hash` | MUST | SHA-256 hex digest (with `sha256:` prefix). |
 | `artifact-hash` | MUST | SHA-256 hex digest read from `manifest.json` in the artifact. |
-| `outcome` | MUST | One of: `in-progress`, `tested`, `promoted`, `failed`, `timeout`. `in-progress` while Test Rig runs. `tested` once the Test Rig exits and before Prime calls /promote or /rollback. Terminal states: `promoted`, `failed`, `timeout`. |
-| `artifact_ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in-progress`. |
+| `outcome` | MUST | One of: `in_progress`, `tested`, `promoted`, `failed`, `timeout`. `in_progress` while Test Rig runs. `tested` once the Test Rig exits and before Prime calls /promote or /rollback. Terminal states: `promoted`, `failed`, `timeout`. |
+| `artifact_ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in_progress`. |
 | `created` | MUST | ISO-8601 timestamp (when spawn was received). |
-| `completed` | MAY | ISO-8601 timestamp. Absent while `in-progress`. |
+| `completed` | MAY | ISO-8601 timestamp. Absent while `in_progress`. |
 | `container-id` | MUST | Name of the Test Rig container (e.g., `lab-gen-1`). |
-| `viability` | MAY | The full viability report. Absent while `in-progress`. |
+| `viability` | MAY | The full viability report. Absent while `in_progress`. |
 
 **Docker Container Lifecycle:**
 
@@ -236,7 +260,7 @@ async def spawn_handler(request):
     await git("add", "-A", artifact_path)
     await git("commit", "-m", f"Generation {generation} artifact")
 
-    # Create generation record with in-progress state
+    # Create generation record with in_progress state
     record = create_generation_record(generation, body)
     append_generation_record(record)
 
@@ -289,7 +313,7 @@ The `git()` helper takes `*args` and a `cwd` keyword argument pointing to the ar
 
 Promote sequence (artifacts repo):
 
-> Note: The gen-N branch and its initial commit were already created during `spawn_handler`. Promote starts from step 4.
+> Note: The gen-N branch and its initial commit were already created during `spawn_handler`. The promote sequence operates on this existing branch:
 
 1. `git checkout main` — return to main
 2. `git merge gen-N --no-ff -m "Promote generation N"` — merge
@@ -420,7 +444,7 @@ The manifest MAY include a `contracts` array — a list of declarative checks th
 
 **Why this matters:** In M1, the health-check stage hard-codes two checks (`GET /health` → 200, `GET /stats` → JSON with `generation`). This works because every M1 organism is a Prime with the same HTTP API. But in M2, when the spec mutates, organisms may expose different endpoints, different schemas, different behavior. Without contracts, every spec mutation would require a corresponding Test Rig change — coupling the organism's evolution to the environment's code. Contracts break that coupling. The organism evolves its spec, declares its contracts, and the Test Rig verifies them without modification.
 
-**Backward compatibility:** Contracts are optional. If `contracts` is absent from the manifest, the Test Rig falls back to the hard-coded health-check behavior (defined in CAMBRIAN-SPEC-005 § Prime HTTP API). This means all existing manifests (including the test artifact) continue to work unchanged. Contracts are additive — they extend verification, never replace the fixed pipeline stages (build → test → start → health → report).
+**Backward compatibility:** Contracts are optional. If `contracts` is absent from the manifest, the Test Rig falls back to the hard-coded health-check behavior (defined in CAMBRIAN-SPEC-005 § Prime HTTP API). This means all existing manifests (including the test artifact) continue to work unchanged. When `contracts` is present, contracts are the sole source of health-check verification — the Test Rig does not supplement with hard-coded checks. The fixed pipeline stages (build → test → start → health → report) are unaffected; contracts only change what happens _within_ the health stage.
 
 #### Contract Schema
 
@@ -677,7 +701,7 @@ The generation record gains an `artifact_ref` field:
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `artifact_ref` | MAY | String. Git ref (tag name) pointing to the artifact's source tree. Present for both promoted generations (tag `gen-N`) and failed generations (tag `gen-N-failed`). Absent for `in-progress` generations. |
+| `artifact_ref` | MAY | String. Git ref (tag name) pointing to the artifact's source tree. Present for both promoted generations (tag `gen-N`) and failed generations (tag `gen-N-failed`). Absent for `in_progress` generations. |
 
 Example generation record for a failed attempt:
 
@@ -1021,7 +1045,7 @@ def test_not_found():
         assert e.code == 404
 ```
 
-### 4.3 Validation
+### 4.4 Validation
 
 After Phase 0 is built, run this sequence:
 
@@ -1136,7 +1160,17 @@ The server MUST:
 - Respond with Content-Type: application/json
 - Include a test suite that verifies all three endpoints
 
-Produce a manifest.json conforming to the Cambrian artifact manifest contract.
+This server does NOT implement /stats. Produce a manifest.json conforming to the
+Cambrian artifact manifest contract. Include a contracts array declaring the health
+and echo endpoints (the Test Rig uses contracts for health verification; without
+them it falls back to a /stats check this server does not implement):
+
+  {"name": "health", "type": "http", "method": "GET", "path": "/health",
+   "expect": {"status": 200, "body": {"ok": true}}},
+  {"name": "echo-valid", "type": "http", "method": "GET", "path": "/echo?msg=hello",
+   "expect": {"status": 200, "body_contains": {"echo": "hello"}}},
+  {"name": "echo-missing", "type": "http", "method": "GET", "path": "/echo",
+   "expect": {"status": 400}}
 ```
 
 ### How to Use
@@ -1215,8 +1249,8 @@ All configuration is via environment variables on the host.
 | Contract check failure | HTTP contract returns unexpected status/body | Test Rig records `failure_stage: health`. All contracts are still evaluated; per-contract results included in viability report. |
 | Malformed contracts | `contracts` array contains invalid contract objects | Test Rig records `failure_stage: manifest`. Contract schema is validated during manifest parsing. |
 | Pytest output unparseable | Test output doesn't match expected patterns | `diagnostics.failures` is empty array. `stdout_tail` and `stderr_tail` still capture raw output. No information lost, just unstructured. |
-| Failed tag already exists | `gen-N-failed` tag exists from a previous retry | Supervisor appends retry suffix: `gen-N-failed-2`, `gen-N-failed-3`, etc. |
-| Failed artifact unreadable | Prime cannot `git show` files from failed tag | Non-fatal. Prime falls back to blind retry (spec + diagnostics only, no source code). |
+| Failed tag already exists | `gen-N-failed` tag exists (should not happen — each retry is a new generation number) | Supervisor logs a warning and overwrites the tag. |
+| Failed source unreadable | Prime cannot read files from local filesystem after a failed attempt | Non-fatal. Prime falls back to blind retry (spec + diagnostics only, no source code). |
 | Pathological output volume | Failed command produces megabytes of output | `stdout_tail` and `stderr_tail` capped at last 100 lines. Individual `error` strings capped at 500 characters. Viability report size stays bounded. |
 
 ## 10. Validation
@@ -1251,8 +1285,8 @@ All configuration is via environment variables on the host.
 - Diagnostics are preserved in generation records via `GET /versions`
 - Rollback creates `gen-N-failed` tag before deleting the branch
 - Generation records include `artifact_ref` pointing to the failed tag
-- Prime can read failed source code via `git show <artifact_ref>:<file>`
-- Retry with suffix tags works (`gen-N-failed-2`, `gen-N-failed-3`)
+- Prime reads failed source code from local filesystem (not from git)
+- Each retry gets a new generation number; `gen-N-failed` tags are never suffixed
 - Viable viability reports include `fitness` object with all metrics
 - Non-viable viability reports include `fitness` with partial metrics (completed stages only)
 - `fitness.test_pass_rate` equals `tests_passed / tests_run` from checks
@@ -1289,7 +1323,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.4.0"
+version: "0.5.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

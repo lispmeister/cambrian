@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.6.0
+version: 0.7.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
 ---
 
@@ -50,7 +50,7 @@ Prime MUST serve these endpoints on port 8401:
 
 | Method | Path | Response |
 |--------|------|----------|
-| GET | `/health` | `200 OK` — body: `{"ok": true}` or empty |
+| GET | `/health` | `200 OK` — body: `{"ok": true}` |
 | GET | `/stats` | `200 OK` — body: `{"generation": N, "status": "idle", "uptime": S}` |
 
 - `/health` is a liveness check. No preconditions. Always returns 200.
@@ -70,7 +70,7 @@ The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://lo
 
 All POST endpoints return `{"ok": false, "error": "..."}` on failure.
 
-`POST /spawn` is asynchronous — it starts the Test Rig and returns immediately. Prime polls `GET /versions` until the generation record has a terminal outcome (`promoted`, `failed`, or `timeout`).
+`POST /spawn` is asynchronous — it starts the Test Rig and returns immediately. Prime polls `GET /versions` until the generation record's outcome is no longer `in_progress` (see [Generation Loop](#the-generation-loop) step 8).
 
 ### Artifact Manifest
 
@@ -156,7 +156,7 @@ Prime reads `status`. If `viable`, promote. If `non-viable`, rollback and option
 | `failure_stage` | MUST | One of: `none`, `manifest`, `build`, `test`, `start`, `health`. First stage that failed, or `none` when viable. |
 | `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` check MUST include `tests_run` and `tests_passed`. `health` check MAY include a `contracts` sub-object with per-contract results. |
 | `completed_at` | MUST | ISO-8601 timestamp. |
-| `diagnostics` | MAY | Present when `status` is `non-viable`. Object with `stage`, `summary`, `exit_code`, `failures[]`, `stdout_tail`, `stderr_tail`. |
+| `diagnostics` | MUST when `non-viable` | Present when `status` is `non-viable`, absent otherwise. Object with `stage`, `summary`, `exit_code`, `failures[]`, `stdout_tail`, `stderr_tail`. |
 
 Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempted and their `passed` fields are `false`.
 
@@ -164,7 +164,7 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 ```
 start → [read spec + history] → [call LLM] → [parse + write files] → [build manifest]
-       → [commit to gen-N branch] → [POST /spawn] → [poll until done]
+       → [POST /spawn] → [poll until outcome != in_progress]
        → [read viability report] → promote or rollback
        → if rollback and retries left: [read failed code + diagnostics] → [call LLM again]
        → if rollback and no retries: stop
@@ -172,7 +172,7 @@ start → [read spec + history] → [call LLM] → [parse + write files] → [bu
 
 ### Step by step
 
-1. **Determine generation number.** `GET /versions` → find the highest generation number → next is N+1. If no history, N=1.
+1. **Determine generation number.** `GET /versions` → find the highest generation number → next is N+1. If no history, N=1. This is also the value Prime returns from `GET /stats` as `generation`.
 
 2. **Read the spec.** Load from `CAMBRIAN_SPEC_PATH` (default `./spec/CAMBRIAN-SPEC-005.md`). Compute its SHA-256 hash.
 
@@ -421,7 +421,7 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ```yaml
 spec-version: "005"
-version: "0.6.0"
+version: "0.7.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
