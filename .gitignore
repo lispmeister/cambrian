@@ -3,6 +3,8 @@
 .dolt/
 *.db
 .beads/.beads-credential-key
+__pycache__/
+*.pyc
 # other private files
 .claude
 tmp
