@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.3.0
+version: 0.4.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -177,7 +177,7 @@ app.router.add_post("/rollback", rollback_handler)
 
 **Generation History:**
 
-- Stored in `generations.json` in the project root (host filesystem).
+- Stored in `generations.json` in the artifacts repo root (`CAMBRIAN_ARTIFACTS_ROOT/generations.json`).
 - Append-only means no record is ever deleted and no completed record is ever modified. An `in-progress` record is updated exactly once to its terminal state (promoted, failed, timeout) — this lifecycle transition is not a violation of append-only semantics. Once a record has a terminal outcome it is immutable.
 - The file is a JSON array. On startup, if the file doesn't exist, create it with `[]`.
 - Concurrent access is not a concern for M1 (single Prime, sequential generations).
@@ -209,7 +209,7 @@ app.router.add_post("/rollback", rollback_handler)
 | `parent` | MUST | Integer >= 0. |
 | `spec-hash` | MUST | SHA-256 hex digest (with `sha256:` prefix). |
 | `artifact-hash` | MUST | SHA-256 hex digest read from `manifest.json` in the artifact. |
-| `outcome` | MUST | One of: `promoted`, `failed`, `timeout`, `in-progress`. |
+| `outcome` | MUST | One of: `in-progress`, `tested`, `promoted`, `failed`, `timeout`. `in-progress` while Test Rig runs. `tested` once the Test Rig exits and before Prime calls /promote or /rollback. Terminal states: `promoted`, `failed`, `timeout`. |
 | `artifact_ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in-progress`. |
 | `created` | MUST | ISO-8601 timestamp (when spawn was received). |
 | `completed` | MAY | ISO-8601 timestamp. Absent while `in-progress`. |
@@ -248,6 +248,7 @@ async def spawn_handler(request):
 async def run_test_rig(generation, artifact_path, container_id):
     """Background task: run Test Rig, update generation record when done."""
     client = aiodocker.Docker()
+    container_timeout = int(os.environ.get("CAMBRIAN_CONTAINER_TIMEOUT", "600"))
     config = {
         "Image": "cambrian-base",
         "Env": [
@@ -260,11 +261,22 @@ async def run_test_rig(generation, artifact_path, container_id):
     }
     container = await client.containers.create_or_replace(name=container_id, config=config)
     await container.start()
-    # Non-blocking wait — event loop remains free for HTTP requests
-    await container.wait()
-    # Read viability report from mounted volume, update generation record
+    # Non-blocking wait with container-level timeout — event loop remains free for HTTP requests
+    # If the container does not exit within CAMBRIAN_CONTAINER_TIMEOUT seconds, kill it and
+    # set outcome to "timeout". This prevents the Supervisor from blocking indefinitely on a hung container.
+    try:
+        await asyncio.wait_for(container.wait(), timeout=container_timeout)
+    except asyncio.TimeoutError:
+        await container.kill()
+        update_generation_record(generation, outcome="timeout")
+        await container.delete()
+        await client.close()
+        return
+    # Read viability report from mounted volume (written by Test Rig to /workspace/viability-report.json)
     report = read_viability_report(artifact_path)
-    update_generation_record(generation, report)
+    # Set outcome to "tested" — Prime polls for this state, then calls /promote or /rollback.
+    # The Supervisor MUST NOT auto-promote or auto-rollback. Prime owns that decision.
+    update_generation_record(generation, report, outcome="tested")
     await container.delete()
     await client.close()
 ```
@@ -276,14 +288,14 @@ The Supervisor operates on the **artifacts repository** (path from `CAMBRIAN_ART
 The `git()` helper takes `*args` and a `cwd` keyword argument pointing to the artifacts repo root. All git commands operate in that directory.
 
 Promote sequence (artifacts repo):
-1. `git checkout -b gen-N` — create branch for the artifact
-2. `git add -A` — stage artifact files
-3. `git commit -m "Generation N artifact"` — commit
-4. `git checkout main` — return to main
-5. `git merge gen-N --no-ff -m "Promote generation N"` — merge
-6. `git tag -a gen-N -m "Generation N promoted"` — annotated tag
-7. `git branch -d gen-N` — delete branch
-8. Update generation record: `outcome=promoted`, `artifact_ref="gen-N"`
+
+> Note: The gen-N branch and its initial commit were already created during `spawn_handler`. Promote starts from step 4.
+
+1. `git checkout main` — return to main
+2. `git merge gen-N --no-ff -m "Promote generation N"` — merge
+3. `git tag -a gen-N -m "Generation N promoted"` — annotated tag
+4. `git branch -d gen-N` — delete branch
+5. Update generation record: `outcome=promoted`, `artifact_ref="gen-N"`
 
 Rollback sequence (artifacts repo):
 1. `git tag -a gen-N-failed -m "Generation N failed"` — preserve artifact
@@ -657,7 +669,7 @@ When the Supervisor rolls back a generation, it MUST preserve the failed code as
 
 The tag `gen-N-failed` is a permanent, lightweight reference to the failed code. It does not pollute the branch namespace. Tags are cheap in git — thousands of failed-generation tags have negligible cost.
 
-**Naming convention:** Failed generation tags use the pattern `gen-N-failed`. If the same generation number is retried and fails again (within `CAMBRIAN_MAX_RETRIES`), subsequent tags use `gen-N-failed-2`, `gen-N-failed-3`, etc. The generation record's `artifact_ref` always points to the most recent failed attempt.
+**Naming convention:** Failed generation tags use the pattern `gen-N-failed`. Each retry gets a new generation number (per CAMBRIAN-SPEC-005 Retry Semantics), so each generation number is used exactly once. Tags are therefore always `gen-N-failed` — never `gen-N-failed-2`.
 
 #### Generation Record Extension
 
@@ -689,12 +701,12 @@ When Prime retries after a failure:
 
 ```
 1. Prime reads generation history (GET /versions)
-   → finds gen-N with outcome=failed, artifact_ref="gen-N-failed", diagnostics={...}
+   → finds gen-N with outcome=failed, viability.diagnostics={...}
 
-2. Prime reads the failed source code from git:
-   → git show gen-N-failed:src/api.py
-   → git show gen-N-failed:src/prime.py
-   → (reads files listed in the failed manifest's "files" array)
+2. Prime reads the failed source code from the local filesystem:
+   → files are still on disk from the previous write (Prime's own workspace)
+   → reads files listed in the failed manifest's "files" array
+   → Prime MUST NOT use git to read files (see CAMBRIAN-SPEC-005 Invariants)
 
 3. Prime constructs the LLM prompt:
    → System: "You are a code generator. Fix the following code based on the test failures."
@@ -704,7 +716,7 @@ When Prime retries after a failure:
    → Prime writes it as a new artifact, NOT a patch on the old one
 ```
 
-The LLM prompt structure is Prime's concern (defined in CAMBRIAN-SPEC-005), but the data availability is an environment concern specified here. The Supervisor MUST make failed artifacts accessible via git tags so Prime can read them.
+The LLM prompt structure is Prime's concern (defined in CAMBRIAN-SPEC-005). The failed git tag (`gen-N-failed`) is retained for human debugging and historical reference, but Prime reads failed source directly from disk — not from git.
 
 **Important:** Informed retry still produces a complete artifact. The LLM outputs all files, not a diff. This preserves the "complete regeneration" property — the artifact is self-contained and not path-dependent. The failed code is a reference for debugging, not a base for patching.
 
@@ -1277,7 +1289,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.2.0"
+version: "0.4.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

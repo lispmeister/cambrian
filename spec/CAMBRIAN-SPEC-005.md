@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.5.1
+version: 0.6.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
 ---
 
@@ -104,9 +104,9 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 }
 ```
 
-**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json`), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
+**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json`, computed as: sort all artifact file paths relative to the artifact root lexicographically, then feed `path_bytes + b'\0' + file_bytes` for each file in order into a single SHA-256 hasher, prefix the hex digest with `sha256:`), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
 
-**MAY fields:** `contracts` (array of verification contract objects).
+**SHOULD fields:** `contracts` (array of verification contract objects). When present, contracts are the sole source of health-check verification — the Test Rig does not supplement with hardcoded checks.
 
 ### Viability Report (Prime reads this)
 
@@ -186,9 +186,9 @@ start → [read spec + history] → [call LLM] → [parse + write files] → [bu
 
 7. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git.
 
-9. **Poll.** `GET /versions` until the generation record's outcome is no longer `in_progress`. The Supervisor sets the outcome to `tested` once the Test Rig container exits. Poll interval: 2 seconds.
+8. **Poll.** `GET /versions` until the generation record's outcome is no longer `in_progress`. The Supervisor sets the outcome to `tested` once the Test Rig container exits. Poll interval: 2 seconds.
 
-10. **Decide.** Read the viability report from the generation record.
+9. **Decide.** Read the viability report from the generation record.
     - If viability status is `viable`: `POST /promote {"generation": N}`. The Supervisor performs the git merge and sets outcome to `promoted`. Done.
     - If viability status is `non-viable` and retries remain: `POST /rollback {"generation": N}`. The Supervisor tags the failed branch and sets outcome to `failed`. Go to step 3 with failure context (see [Informed Retry](#informed-retry)).
     - If viability status is `non-viable` and no retries: `POST /rollback {"generation": N}`. Stop.
@@ -421,7 +421,7 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ```yaml
 spec-version: "005"
-version: "0.5.1"
+version: "0.6.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
