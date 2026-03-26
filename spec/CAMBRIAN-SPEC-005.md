@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.0
+version: 0.10.1
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -13,6 +13,8 @@ tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 This is the genome. An LLM reads this document and produces a complete, working Prime — a code generator that can read *this same document* and produce another Prime. The output is not a diff, not a patch, not a fragment. It is a complete codebase: source files, tests, manifest, and this spec file — everything needed to run.
 
 Prime is a general-purpose code generator. Give it any spec and it produces a working codebase. Self-reproduction is what happens when Prime is given *its own* spec as input.
+
+**Spec version inheritance:** Each promoted generation carries a frozen copy of the spec at its creation time (at `CAMBRIAN_SPEC_PATH` in the artifact). Updating this document does not retroactively change promoted generations — they each carry the genome that produced them. To propagate spec changes, a new generation must be produced from the updated spec and promoted. This is analogous to biological inheritance: the genome is copied at reproduction, not shared by reference.
 
 <!-- BEGIN FROZEN: identity-anchor -->
 ## Invariants
@@ -124,7 +126,26 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 }
 ```
 
-**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json`, computed as: sort all artifact file paths relative to the artifact root lexicographically, then feed `path_bytes + b'\0' + file_bytes` for each file in order into a single SHA-256 hasher, prefix the hex digest with `sha256:`), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
+**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start` (SHOULD use `python path/to/script.py` syntax, NOT `python -m module.path` — the `-m` form requires `__init__.py` files and breaks in containers without proper package structure), `entry.health`.
+
+**`artifact-hash` algorithm** — this MUST be implemented exactly or hash verification will fail:
+
+```python
+import hashlib
+from pathlib import Path
+
+def compute_artifact_hash(artifact_root: Path, files: list[str]) -> str:
+    hasher = hashlib.sha256()
+    for rel_path in sorted(files):              # lexicographic sort is required
+        if rel_path == "manifest.json":
+            continue                            # manifest.json is excluded
+        hasher.update(rel_path.encode())
+        hasher.update(b"\0")                    # null separator between path and content
+        hasher.update((artifact_root / rel_path).read_bytes())
+    return f"sha256:{hasher.hexdigest()}"
+```
+
+The null byte separator (`b"\0"`) between `path_bytes` and `file_bytes` is critical — omitting it allows hash collisions between files with complementary path/content boundaries. An LLM generating this code MUST include `hasher.update(b"\0")`.
 
 **SHOULD fields:** `contracts` (array of verification contract objects). When present, contracts are the sole source of health-check verification — the Test Rig does not supplement with hardcoded checks.
 
@@ -342,7 +363,8 @@ Prime reads the failed source code from the local filesystem — the files are s
 - Python 3.14 (free-threaded build deferred to M2)
 - All I/O-bound code MUST use `asyncio`
 - HTTP server: `aiohttp`
-- HTTP client (for Supervisor API and LLM calls): `aiohttp.ClientSession`
+- HTTP client for Supervisor API calls: `aiohttp.ClientSession`
+- LLM API client: `anthropic` Python SDK in async mode (`anthropic.AsyncAnthropic()`). The SDK handles authentication, retries, rate limiting, and streaming — do not reimplement these with raw `aiohttp`.
 - Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
 - Type annotations: full coverage, Pyright strict compatible
 - Validation: Pydantic v2 for all I/O boundary data (manifest, viability report, API responses)
@@ -547,7 +569,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.10.0"
+version: "0.10.1"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"

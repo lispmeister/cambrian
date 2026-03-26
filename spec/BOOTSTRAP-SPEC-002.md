@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.0
+version: 0.8.1
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -96,19 +96,19 @@ All Python code MUST be fully type-annotated. Type checking is enforced in CI �
 Rules:
 - **Annotate aggressively.** Every function signature, every return type, every class attribute. Start strict from day one — retrofitting annotations is expensive.
 - **Type checker:** Pyright in strict mode. Configured via `pyrightconfig.json` at project root. Zero errors tolerated in CI. Migration path: switch to `ty` (Astral, Rust-based, 10-60x faster) when its Pydantic plugin ships ([astral-sh/ty#2403](https://github.com/astral-sh/ty/issues/2403)). No annotation changes required — both consume the same type syntax.
-- **I/O boundary validation and JSON handling:** Pydantic v2 for all data crossing process or network boundaries — manifest parsing, HTTP request/response bodies, viability reports, generation records. Pydantic models are the single source of truth for schemas defined in this document and CAMBRIAN-SPEC-005. All JSON deserialization at boundaries MUST use `model_validate_json()`, all serialization MUST use `model_dump_json()`. Raw `json.loads()`/`json.dumps()` MUST NOT be used at I/O boundaries — only for internal formatting where no validation is needed.
+- **I/O boundary validation and JSON handling:** Pydantic v2 SHOULD be used for all data crossing process or network boundaries — manifest parsing, HTTP request/response bodies, viability reports, generation records. Raw `json.loads()`/`json.dumps()` is acceptable in M1 where schema compliance is enforced by the Test Rig. In M2, Pydantic becomes MUST — spec mutation introduces schema drift risk and the Test Rig cannot catch mismatches before they propagate. When Pydantic is used: `model_validate_json()` for deserialization, `model_dump_json()` for serialization.
 - **Precise constructs:** Prefer `Protocol` over abstract base classes, `TypedDict` for JSON-shaped data, `Literal` for enums with few values (e.g., `Literal["viable", "non-viable"]`), `Self` for fluent APIs. Avoid `Any` — if a type is truly unknown, use `object` and narrow with `isinstance`.
 - **No runtime cost:** Type annotations are erased at runtime. Pydantic validation happens at I/O boundaries only, not on internal function calls.
 
 ### Runtime introspection
 
-This is experimental code. All components MUST be built for introspection and live debugging. Use `inspect` (stdlib) and `typing-inspect` for runtime type and call-stack introspection. Use `devtools` and `rich` for pretty-printing complex objects (Pydantic models, generation records, viability reports) to the console during development.
+This is experimental code. Components SHOULD be built for introspection and live debugging. Use `inspect` (stdlib) and `typing-inspect` for runtime type and call-stack introspection. Use `devtools` and `rich` for pretty-printing complex objects (generation records, viability reports) to the console during development.
 
-Concrete expectations:
-- Every major object (Prime, Supervisor state, generation records) MUST have a `rich`-compatible `__repr__` or implement `__rich_repr__` for readable console output.
-- Debug endpoints on the Supervisor (e.g., `GET /debug/state`) SHOULD dump internal state as formatted JSON using `rich` in development mode.
-- Generation failures MUST log the full call stack and relevant object state using `inspect.stack()` and `devtools.debug()`, not just an error message.
-- Pydantic models can be introspected at runtime via `model.model_fields`, `model.model_json_schema()` — use this for self-documenting APIs and debug output.
+Concrete recommendations:
+- Major objects (Supervisor state, generation records) SHOULD implement `__rich_repr__` for readable console output.
+- Debug endpoints on the Supervisor (e.g., `GET /debug/state`) SHOULD dump internal state as formatted JSON in development mode.
+- Generation failures SHOULD log the full call stack using `inspect.stack()` and `devtools.debug()`, not just an error message.
+- When using Pydantic: models can be introspected at runtime via `model.model_fields`, `model.model_json_schema()` — useful for self-documenting APIs and debug output.
 
 ### Structured logging everywhere
 
@@ -285,25 +285,30 @@ async def run_test_rig(generation, artifact_path, container_id):
         },
     }
     container = await client.containers.create_or_replace(name=container_id, config=config)
-    await container.start()
-    # Non-blocking wait with container-level timeout — event loop remains free for HTTP requests
-    # If the container does not exit within CAMBRIAN_CONTAINER_TIMEOUT seconds, kill it and
-    # set outcome to "timeout". This prevents the Supervisor from blocking indefinitely on a hung container.
+    timed_out = False
     try:
-        await asyncio.wait_for(container.wait(), timeout=container_timeout)
-    except asyncio.TimeoutError:
-        await container.kill()
-        update_generation_record(generation, outcome="timeout")
-        await container.delete()
+        await container.start()
+        # Non-blocking wait with container-level timeout — event loop remains free for HTTP requests
+        # If the container does not exit within CAMBRIAN_CONTAINER_TIMEOUT seconds, kill it and
+        # set outcome to "timeout". This prevents the Supervisor from blocking indefinitely on a hung container.
+        try:
+            await asyncio.wait_for(container.wait(), timeout=container_timeout)
+        except asyncio.TimeoutError:
+            await container.kill()
+            update_generation_record(generation, outcome="timeout")
+            timed_out = True
+            return
+        # Read viability report from mounted volume (written by Test Rig to /workspace/viability-report.json)
+        report = read_viability_report(artifact_path)
+        # Set outcome to "tested" — Prime polls for this state, then calls /promote or /rollback.
+        # The Supervisor MUST NOT auto-promote or auto-rollback. Prime owns that decision.
+        update_generation_record(generation, report, outcome="tested")
+    finally:
+        # Always clean up the container — even if an exception occurs after start()
+        import contextlib
+        with contextlib.suppress(Exception):
+            await container.delete()
         await client.close()
-        return
-    # Read viability report from mounted volume (written by Test Rig to /workspace/viability-report.json)
-    report = read_viability_report(artifact_path)
-    # Set outcome to "tested" — Prime polls for this state, then calls /promote or /rollback.
-    # The Supervisor MUST NOT auto-promote or auto-rollback. Prime owns that decision.
-    update_generation_record(generation, report, outcome="tested")
-    await container.delete()
-    await client.close()
 ```
 
 **Git Operations:**
@@ -336,6 +341,8 @@ The Supervisor tracks its own state:
 - `status`: one of `idle`, `spawning`, `testing`, `promoting`, `rolling-back`
 - `current_generation`: the generation currently being processed (or the last completed)
 - `start_time`: timestamp for uptime calculation
+
+**Important:** The Supervisor's `status` is its own operational state — what the Supervisor process is doing right now. It is NOT the same as a generation record's `outcome` (what happened to a specific generation). `/stats` returns the Supervisor's status; `/versions` returns generation outcomes. Do NOT derive `status` from the latest record's `outcome` — a Supervisor that just finished promoting a generation is `idle`, not `promoted`.
 
 ### 1.4 Startup Sequence
 
@@ -416,8 +423,9 @@ Stage 4 — Start:
   - Run entry.start as background process
   - Capture stdout/stderr (used for diagnostics on failure, see §2.6)
   - Wait for TCP port (parsed from entry.health URL) to accept connections
+  - TCP readiness: poll with `socket.create_connection((host, port), timeout=1)` at 0.5s intervals. The port is ready when the connection succeeds (close it immediately). If the process exits before the port opens, fail immediately without waiting for the full timeout.
   - Timeout: 30 seconds
-  - Fail: process exits, port never opens, or timeout
+  - Fail: process exits before port opens, port never accepts connections within 30s, or timeout
 
 Stage 5 — Health Check:
   - If manifest contains a "contracts" array, execute each contract (see §2.5)
@@ -435,7 +443,7 @@ Report:
   - Exit 0 if all stages passed (status=viable)
   - Exit 1 if any stage failed (status=non-viable)
   - Pipeline is fail-fast: if stage N fails, stages N+1..5 are not attempted.
-    Their checks show passed=false, duration_ms=0.
+    Their entries MUST still appear in the `checks` dict with `passed: false` and `duration_ms: 0`. This makes the report self-describing — a consumer can determine all 5 stages' outcomes without knowing the pipeline's fail-fast behavior. The `stages_completed` field in the fitness object provides the authoritative list of stages that were actually attempted.
 ```
 
 **Test count extraction:**
@@ -1352,7 +1360,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.8.0"
+version: "0.8.1"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
