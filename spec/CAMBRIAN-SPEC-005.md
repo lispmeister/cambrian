@@ -2,8 +2,8 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.8.0
-tags: [cambrian, prime, genome, LLM, self-reproduction, M1]
+version: 0.10.0
+tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
 # CAMBRIAN-SPEC-005 — The Genome
@@ -14,13 +14,17 @@ This is the genome. An LLM reads this document and produces a complete, working 
 
 Prime is a general-purpose code generator. Give it any spec and it produces a working codebase. Self-reproduction is what happens when Prime is given *its own* spec as input.
 
+<!-- BEGIN FROZEN: identity-anchor -->
 ## Invariants
 
-These rules are absolute. They define what it means to be Prime.
+These rules are absolute. They define what it means to be Prime. In M2, the Spec Mutator MUST NOT modify text within FROZEN blocks. The markers are HTML comments — they do not affect rendering and are invisible to M1.
 
 - **Prime MUST NOT modify the spec.** The spec is the genome — it defines what Prime is. If the spec changes, it changes through an external process (human editing or future M2+ mutation), never through Prime's own initiative.
 - **Prime MUST NOT self-assess viability.** Viability is determined by the Test Rig (environment). Prime requests verification and accepts the verdict. It never declares itself viable without external confirmation.
 - **Prime MUST NOT perform git operations.** Git is Supervisor-managed infrastructure. Prime writes files to its workspace. The Supervisor handles branches, commits, tags, and merges.
+- **Prime MUST NOT generate the manifest using the LLM.** The manifest is computed by Prime's own code from measured data (hashes, token usage, file list). It is a verified contract, not generated content. LLM output affects source files only.
+- **Prime MUST copy the spec file to the artifact workspace unchanged.** The spec is the genome. Faithful copying is inheritance. Modification or omission corrupts the lineage.
+<!-- END FROZEN: identity-anchor -->
 
 ## Glossary
 
@@ -30,6 +34,7 @@ These rules are absolute. They define what it means to be Prime.
 - **Manifest** — `manifest.json` at the artifact root. The fixed-point contract between organism and environment. Describes how to build, test, and start Prime.
 - **Generation** — One attempt to produce a viable artifact. Each gets a monotonically increasing number, a git branch (`gen-N`), and an audit record.
 - **Viability Report** — Structured JSON written by the Test Rig at `/workspace/viability-report.json`. Binary outcome: `viable` or `non-viable`. Read by Prime via the generation record.
+- **Hash** — All hash values in Cambrian use the format `sha256:<64 hex characters>`. The `sha256:` prefix is literal text, not a URL scheme. Example: `sha256:a3b4c5...ef` (exactly 64 hex chars after the colon). An LLM MUST include this prefix when generating hash fields.
 
 ## What Prime Does
 
@@ -54,7 +59,7 @@ Prime MUST serve these endpoints on port 8401:
 | GET | `/stats` | `200 OK` — body: `{"generation": N, "status": "idle", "uptime": S}` |
 
 - `/health` is a liveness check. No preconditions. Always returns 200.
-- `/stats` — `generation` MUST match the artifact's generation number. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start.
+- `/stats` — `generation` MUST match the artifact's generation number. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start. **Startup behavior:** before the generation loop determines the generation number (step 1 of the loop), `/stats` returns `generation: 0`. Once step 1 completes, `/stats` reflects the active generation number for the duration of that attempt.
 
 ### Supervisor HTTP API (Prime calls these)
 
@@ -122,6 +127,10 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 **MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json`, computed as: sort all artifact file paths relative to the artifact root lexicographically, then feed `path_bytes + b'\0' + file_bytes` for each file in order into a single SHA-256 hasher, prefix the hex digest with `sha256:`), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
 
 **SHOULD fields:** `contracts` (array of verification contract objects). When present, contracts are the sole source of health-check verification — the Test Rig does not supplement with hardcoded checks.
+
+`spec-lineage` (array of `sha256:...` hash strings): ordered list from oldest ancestor spec to immediate parent spec. Empty array `[]` for artifacts produced from the original human-written spec. Present when the spec was produced by M2+ mutation. M1 ignores this field; M2 uses it to reconstruct evolutionary history independent of git.
+
+**Version compatibility:** `cambrian-version: 1` is the M1 contract defined in this document. Future versions (2+) MAY add fields (e.g., `mutation-type`, `parent-spec-hash`, `campaign-id`) that version-1 consumers ignore. The Test Rig MUST reject manifests with `cambrian-version` greater than its supported maximum and MUST accept manifests with `cambrian-version` at or below its supported maximum.
 
 ### Viability Report (Prime reads this)
 
@@ -435,9 +444,110 @@ The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
 ---
 
+## M2: Genome Evolution
+
+This section is **inactive during M1**. It activates when `CAMBRIAN_MODE=m2` is set. Nothing in this section changes M1 behavior. It is written now so that the design is captured in the genome itself — the mutation strategy lives in the spec, not in infrastructure, so that it can itself evolve in M3+.
+
+### Spec Mutation
+
+The **Spec Mutator** is a component that reads spec variants and produces modified spec variants. It is not Prime. It operates outside the generation loop, between campaigns. It receives campaign summaries as input and produces candidate mutated specs as output. It MUST NOT call the Test Rig directly or read viability reports directly.
+
+**Three mutation types:**
+
+**Type 1 — Refinement** (small, targeted): Input: one spec variant + one campaign's failure mode distribution. Prompt: "Here is a spec. When Prime followed this spec, it consistently failed at [stage]. What single change to the spec would address this failure mode?" Output: one section rewritten or one paragraph added. Expected effect: immediate improvement. Protection needed: none — these almost always improve or maintain fitness.
+
+**Type 2 — Section Transplant** (medium, structural): Input: two spec variants from different MAP-Elites niches. Prompt: "Spec A produces fast code. Spec B produces correct code. Rewrite Spec A's [section] using Spec B's approach to [concept]." Output: a hybrid spec. Expected effect: uncertain — the hybrid may combine strengths or be incoherent. Protection needed: coherence screening before campaign.
+
+**Type 3 — Restructuring** (large, exploratory): Input: one spec + evidence of a plateau (fitness flat over N campaigns). Prompt: "This spec has reached a fitness plateau. Propose a fundamentally different approach to [section] that might break out of this local optimum." Output: section completely rewritten with different approach. Expected effect: highly uncertain. Protection needed: NEAT-style speciation (the new niche must be evaluated independently, not competing directly with the incumbent until it proves itself).
+
+**Mutation constraints:**
+
+- Sections marked `<!-- BEGIN FROZEN -->` MUST NOT be modified. The Spec Mutator checks this with byte-for-byte comparison after mutation — if any FROZEN section differs, the mutation is discarded.
+- Every mutation produces a **complete spec**, not a diff. The diff is implicit in the git history.
+- The mutation strategy defined in this section is itself mutable in M3+. To mutate the mutation strategy, the Spec Mutator would need to modify this section — which is permitted since this section is not FROZEN. This is intentional.
+
+**Coherence screening:** Before a mutated spec enters a campaign, a fast screening model checks: (1) all MUST fields are still present in manifest and API sections, (2) FROZEN sections are unchanged (byte-for-byte), (3) the spec still describes an HTTP server on port 8401, (4) no internal contradictions between sections. Incoherent mutations are discarded without running a campaign.
+
+**Dual model:** Use the larger model (Opus) for creative mutations (Types 1-3). Use the smaller model (Sonnet) for coherence screening. This prevents one model from generating and rubber-stamping its own output.
+
+### Campaign
+
+A **campaign** is a sequence of N generation attempts against a single spec variant. Default N: `CAMBRIAN_CAMPAIGN_LENGTH` (default 5).
+
+At the end of a campaign, the Supervisor computes a **campaign summary**:
+
+| Field | Computation |
+|-------|-------------|
+| `viability_rate` | viable generations / total generations |
+| `fitness_mean` | mean fitness vector across all generations (partial where non-viable) |
+| `fitness_trend` | slope of viability across generations (linear regression on [0,1] outcomes) |
+| `failure_distribution` | count per `failure_stage` value |
+| `stages_completed_distribution` | count per maximum stage reached across attempts |
+
+**Campaign as unit of selection:** In M2, the spec is judged by its campaign summary, not any single generation. A spec that produces 80% viability over 5 generations is better than one that produces 1 perfect generation and 4 failures. Consistency matters more than peak performance. A positive `fitness_trend` rewards specs that "teach well" — where the LLM improves across retries within the campaign.
+
+### Spec Archive
+
+The spec archive is a **MAP-Elites grid** indexed by 4 behavioral dimensions. Each cell holds the best-scoring spec variant for that niche. The archive is sparse — most cells empty initially, filling as evolution progresses.
+
+**Behavior descriptor (4 dimensions):**
+
+| Dimension | Source | Buckets |
+|-----------|--------|---------|
+| Viability rate | campaign summary | 5: [0,0.2), [0.2,0.4), [0.4,0.6), [0.6,0.8), [0.8,1.0] |
+| Token economy | mean(token_input + token_output) per generation | 4: <10K, <50K, <100K, ≥100K |
+| Time to viability | generations until first viable artifact | 4: 1, 2, 3, ≥4 |
+| Fitness trend | campaign viability slope | 3: declining (<-0.05), flat ([-0.05, 0.05]), improving (>0.05) |
+
+Maximum archive capacity: 5 × 4 × 4 × 3 = 240 cells. In practice, the archive will be sparse for a long time.
+
+**Storage:** `spec-archive.json` in the artifacts repo root. Each entry: `{cell_index, spec_hash, spec_path, campaign_summary, updated_at}`.
+
+**Parent selection per mutation type:**
+- Type 1 (refinement): select the cell with the highest `viability_rate` and most recent `failure_distribution`
+- Type 2 (transplant): select two cells from distant regions of the grid (e.g., high viability + high economy)
+- Type 3 (restructuring): select the cell with the longest plateau (same spec for ≥3 campaigns with flat trend)
+
+**Why MAP-Elites over hill-climbing:** A spec optimal for the current task (echo server) may fail on future tasks. The archive preserves all behavioral niches, not just the current winner. When a new task tier activates (see Test Tiers below), archived variants from different niches provide a diverse starting population.
+
+### Meta-Monitor
+
+The **Meta-Monitor** is deterministic code (NOT an LLM) that watches campaign-level trends and adjusts meta-loop parameters. It implements VSM System 4 (intelligence function) — environmental scanning and adaptation. An LLM meta-monitor could learn to game its own observations; a deterministic one cannot.
+
+**Triggers:**
+
+| Condition | Detection | Response |
+|-----------|-----------|----------|
+| Archive collapsing | < 5 occupied cells after 10 campaigns | Increase Type 3 mutation rate to 50% |
+| Fitness plateau | Best cell unchanged for 5 campaigns | Trigger one Type 2 transplant from distant niche |
+| Budget burn | Projected exhaustion in < 10 campaigns at current rate | Halve campaign length (`CAMBRIAN_CAMPAIGN_LENGTH`) |
+| Failure clustering | > 80% of failures at same stage | Increase Type 1 mutations targeting that stage |
+| Failure random | No stage accounts for > 30% of failures | Decrease Type 1 rate, increase Type 3 |
+
+**Neutral drift:** Every `CAMBRIAN_DRIFT_INTERVAL` campaigns (default 10), relax selection for `CAMBRIAN_DRIFT_LENGTH` campaigns (default 2). During neutral drift, all Tier 0 viable specs are added to the archive regardless of fitness ranking. This prevents monoculture and preserves structural diversity (Kimura neutral theory applied to spec evolution).
+
+**Budget tracking:** The Meta-Monitor tracks cumulative token spend and projects remaining campaigns at the current burn rate. When projected spend exceeds `CAMBRIAN_TOKEN_BUDGET`, it stops the meta-loop gracefully: complete the current campaign, do not start new ones, write a final archive snapshot.
+
+### Test Tiers
+
+The Test Rig evaluates against progressively harder tiers. Each tier activates when the previous tier's `viability_rate` exceeds 80% across 3 consecutive campaigns. M1 operates at Tier 0 only.
+
+| Tier | Requirement | Activation |
+|------|-------------|------------|
+| 0 | Basic viability: build, test, start, health pass | Always active (M1) |
+| 1 | Behavioral contracts declared in spec pass | Tier 0 viability > 80% for 3 campaigns |
+| 2 | Robustness: concurrent requests (10 simultaneous), malformed input returns 400, process survives SIGHUP | Tier 1 > 80% for 3 campaigns |
+| 3 | Performance: p99 latency < 100ms, throughput > 1000 req/s for 10s, RSS < 50MB | Tier 2 > 80% for 3 campaigns |
+
+The tier system adds checks **within** the health stage — the pipeline structure (build → test → start → health → report) is unchanged. Current tier is tracked in the archive alongside the viability rate.
+
+**Why tiers:** Without progressive difficulty, a spec optimized for the echo server task will overfit. Tiers act as a Red Queen — the fitness landscape grows harder as the population improves. A spec that thrives at Tier 0 must prove itself at Tier 1 before it can dominate the archive.
+
+---
+
 ```yaml
 spec-version: "005"
-version: "0.8.0"
+version: "0.10.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"

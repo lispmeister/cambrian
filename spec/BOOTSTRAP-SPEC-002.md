@@ -2,8 +2,8 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.6.0
-tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, contracts, diagnostics]
+version: 0.8.0
+tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
 
@@ -239,6 +239,7 @@ app.router.add_post("/rollback", rollback_handler)
 | `completed` | MAY | ISO-8601 timestamp. Absent while `in_progress`. |
 | `container-id` | MUST | Name of the Test Rig container (e.g., `lab-gen-1`). |
 | `viability` | MAY | The full viability report. Absent while `in_progress`. |
+| `campaign-id` | MAY | String. Identifier grouping generations into a campaign. Absent in M1. In M2, all generations run against the same spec variant share a `campaign-id`. Format: `campaign-<8-char-uuid>`. Absent-means-M1 — consumers MUST treat absence as equivalent to no campaign. |
 
 **Docker Container Lifecycle:**
 
@@ -377,14 +378,30 @@ The Test Rig is baked into the Docker image at `/test-rig/`. It is NOT part of t
 ```
 Stage 1 — Read Manifest:
   - Read /workspace/manifest.json
-  - Validate all MUST fields present and correctly typed
+  - Validate all MUST fields present and correctly typed per the checklist below
   - Validate cambrian-version == 1
-  - Fail: missing file, malformed JSON, missing fields
+  - If "contracts" is present, validate each contract object against the contract schema (§2.5)
+  - Fail: missing file, malformed JSON, missing fields, type mismatch
+
+  Manifest validation checklist (MUST fields):
+  - cambrian-version: integer, must equal 1
+  - generation: integer, >= 0
+  - parent-generation: integer, >= 0
+  - spec-hash: string, matches /^sha256:[0-9a-f]{64}$/
+  - artifact-hash: string, matches /^sha256:[0-9a-f]{64}$/
+  - producer-model: string, non-empty
+  - token-usage: object with integer fields "input" (>= 0) and "output" (>= 0)
+  - files: non-empty array of strings, must include "manifest.json"
+  - created_at: string, valid ISO-8601 datetime
+  - entry.build: string, non-empty
+  - entry.test: string, non-empty
+  - entry.start: string, non-empty
+  - entry.health: string, valid URL (http:// or https://)
 
 Stage 2 — Build:
   - Run entry.build as shell command in /workspace
   - Capture stdout/stderr (used for diagnostics on failure, see §2.6)
-  - Timeout: 120 seconds
+  - Timeout: 300 seconds (pip install in an uncached container can easily exceed 120s)
   - Fail: non-zero exit code or timeout
 
 Stage 3 — Test:
@@ -392,7 +409,7 @@ Stage 3 — Test:
   - Capture stdout/stderr to extract test counts AND failure details (see §2.6)
   - Parse pytest output for "N passed" / "N failed" pattern
   - Parse pytest output for individual test failures (see §2.6 for format)
-  - Timeout: 300 seconds
+  - Timeout: 120 seconds (a well-written test suite for this codebase size should finish well under 2 minutes)
   - Fail: non-zero exit code or timeout
 
 Stage 4 — Start:
@@ -556,6 +573,8 @@ When any pipeline stage fails, the Test Rig MUST include a `diagnostics` object 
 
 **Design principle:** The diagnostics section is produced by the environment (Test Rig), stored by the environment (Supervisor, in the generation record), and consumed by the organism (Prime, when constructing the LLM prompt for the next attempt). The organism MUST NOT produce its own diagnostics — only the environment can assess failure. This preserves the "environment judges, not the organism" invariant from CAMBRIAN-SPEC-005 § Invariants.
 
+**Completeness requirement:** The Test Rig MUST populate all MUST fields in the diagnostics object when a stage fails. Returning an empty diagnostics object, returning `null`, or omitting MUST fields is a Test Rig bug, not graceful degradation. A missing `exit_code` or empty `failures` array when tests failed destroys the teaching signal. There is no fallback — diagnostics are all-or-nothing.
+
 #### Diagnostics Schema
 
 The `diagnostics` object is included in the viability report when `status` is `non-viable`:
@@ -611,7 +630,7 @@ Each stage produces diagnostics differently:
 
 **manifest** — Validation error. `summary` describes the schema violation (e.g., "missing required field: entry.build"). `failures` is empty. `stdout_tail` and `stderr_tail` are empty. `exit_code` is null.
 
-**build** — Build command failure. `summary` is "build command failed with exit code N" or "build command timed out after 120s". `failures` is empty. `stdout_tail` and `stderr_tail` capture the build output (compiler errors, missing dependencies, pip failures).
+**build** — Build command failure. `summary` is "build command failed with exit code N" or "build command timed out after 300s". `failures` is empty. `stdout_tail` and `stderr_tail` capture the build output (compiler errors, missing dependencies, pip failures).
 
 **test** — Test suite failure. This is the richest diagnostic stage. `summary` is "N of M tests failed". `failures` contains one entry per failed test, extracted by parsing pytest output (see below). `stdout_tail` and `stderr_tail` capture the full test output.
 
@@ -772,6 +791,7 @@ The Test Rig SHOULD compute a `fitness` object and include it in every viability
 | `dependency_count` | `/workspace/requirements.txt` | Count non-empty, non-comment lines. `0` if file is empty or absent. |
 | `token_input` | `manifest.token-usage.input` | Direct copy |
 | `token_output` | `manifest.token-usage.output` | Direct copy |
+| `contract_pass_rate` | `checks.health.contracts` | Passed contracts / total contracts. `1.0` if all pass, `0.0` if all fail. **Absent** if manifest contains no `contracts` array (fallback health check mode). In M2, this is the core fitness signal — it measures how well the generated code satisfies its own declared behavioral contracts. |
 
 **Implementation:** Fitness computation is a post-processing step in the Report phase, after all pipeline stages have completed (or failed). The Test Rig:
 
@@ -781,7 +801,9 @@ The Test Rig SHOULD compute a `fitness` object and include it in every viability
 4. Assembles the `fitness` object
 5. Includes it in the viability report
 
-For non-viable reports, fitness includes partial metrics from completed stages. Metrics from unattempted stages (due to fail-fast) are absent from the fitness object.
+For non-viable reports, fitness MUST include metrics from all completed stages. Metrics from unattempted stages (due to fail-fast) are **absent** from the fitness object — they are never set to zero, because zero is a meaningful value for some metrics (e.g., 0 tests passed). Absent means "not attempted"; zero means "attempted and measured zero."
+
+The fitness object MUST include a `stages_completed` field: an array of stage names that were attempted (regardless of whether they passed). Example: `["manifest", "build", "test"]` for a generation that failed at `start`. This enables **hindsight relabeling** in M2: a generation that fails at `start` but passes `build` and `test` demonstrates partial capability. Binary non-viability is a selection label; partial `stages_completed` is a measurement. Both are recorded.
 
 **Line counting:** The Test Rig counts lines using a simple newline count (`\n`). Binary files are skipped (files that contain null bytes in their first 8KB). This is a rough metric — it measures volume, not complexity — but it's cheap, deterministic, and sufficient for cross-generation comparison.
 
@@ -1330,7 +1352,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.6.0"
+version: "0.8.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
