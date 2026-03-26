@@ -1,7 +1,7 @@
 """Append-only generation record store backed by generations.json in the artifacts repo."""
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,15 +32,31 @@ def append(record: dict[str, Any]) -> None:
     log.info("generation_record_appended", generation=record.get("generation"))
 
 
+_TERMINAL_OUTCOMES = {"promoted", "failed", "timeout"}
+
+
 def update(generation: int, **fields: Any) -> None:
-    """Update fields on an existing generation record in place."""
+    """Update fields on an existing generation record in place.
+
+    Rejects updates to records that already have a terminal outcome
+    (promoted, failed, timeout) to prevent state corruption.
+    """
     path = _generations_path()
     records = load_all()
     for record in records:
         if record.get("generation") == generation:
+            current_outcome = record.get("outcome")
+            if current_outcome in _TERMINAL_OUTCOMES:
+                log.warning(
+                    "generation_record_update_rejected",
+                    generation=generation,
+                    current_outcome=current_outcome,
+                    attempted_fields=list(fields.keys()),
+                )
+                return
             record.update(fields)
             if "completed" not in fields:
-                record["completed"] = datetime.now(timezone.utc).isoformat()
+                record["completed"] = datetime.now(UTC).isoformat()
             break
     path.write_text(json.dumps(records, indent=2))
     log.info("generation_record_updated", generation=generation, fields=list(fields.keys()))

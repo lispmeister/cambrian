@@ -1,8 +1,10 @@
 """Cambrian Supervisor — host-side HTTP server managing containers and generation history."""
 import asyncio
+import contextlib
 import json
 import os
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,13 @@ DOCKER_IMAGE = os.environ.get("CAMBRIAN_DOCKER_IMAGE", "cambrian-base")
 SUPERVISOR_URL = os.environ.get(
     "CAMBRIAN_SUPERVISOR_URL", "http://host.docker.internal:8400"
 )
+CONTAINER_TIMEOUT = int(os.environ.get("CAMBRIAN_CONTAINER_TIMEOUT", "600"))
+
+_start_time: float = 0.0
+# Supervisor operational status — NOT the same as generation record outcome.
+# idle | spawning | testing | promoting | rolling-back
+_status: str = "idle"
+_current_generation: int | None = None
 
 
 def _require_env(name: str) -> str:
@@ -31,6 +40,13 @@ def _require_env(name: str) -> str:
     if not value:
         raise SystemExit(f"Fatal: {name} is required but not set.")
     return value
+
+
+def _set_status(status: str, generation: int | None = None) -> None:
+    global _status, _current_generation
+    _status = status
+    if generation is not None:
+        _current_generation = generation
 
 
 # ---------------------------------------------------------------------------
@@ -53,17 +69,40 @@ async def handle_root(request: web.Request) -> web.Response:
 
 
 async def handle_stats(request: web.Request) -> web.Response:
+    """Return Supervisor operational state.
+
+    Note: `status` here is the Supervisor's own state (idle/spawning/testing/…),
+    NOT the latest generation record's `outcome`. Do not derive one from the other.
+    """
     records = generations.load_all()
     latest = records[-1] if records else None
+    latest_gen = int(latest.get("generation", 0)) if latest else 0
+    uptime = int(time.time() - _start_time)
     return web.json_response({
-        "generation": latest.get("generation") if latest else None,
-        "status": latest.get("outcome", "in_progress") if latest else "idle",
-        "total_generations": len(records),
+        "generation": latest_gen,
+        "status": _status,
+        "uptime": uptime,
     })
 
 
 async def handle_versions(request: web.Request) -> web.Response:
     return web.json_response(generations.load_all())
+
+
+async def handle_debug_state(request: web.Request) -> web.Response:
+    """Dump internal Supervisor state as JSON — for development debugging only."""
+    return web.json_response({
+        "status": _status,
+        "current_generation": _current_generation,
+        "uptime": int(time.time() - _start_time),
+        "records": generations.load_all(),
+        "config": {
+            "port": PORT,
+            "docker_image": DOCKER_IMAGE,
+            "container_timeout": CONTAINER_TIMEOUT,
+            "artifacts_root": git_ops.artifacts_root(),
+        },
+    })
 
 
 async def handle_spawn(request: web.Request) -> web.Response:
@@ -81,11 +120,13 @@ async def handle_spawn(request: web.Request) -> web.Response:
         )
 
     # Verify Docker image exists
+    _set_status("spawning", generation)
     docker = aiodocker.Docker()
     try:
         await docker.images.inspect(DOCKER_IMAGE)
     except Exception:
         await docker.close()
+        _set_status("idle")
         return web.json_response(
             {"ok": False, "error": f"Docker image {DOCKER_IMAGE} not found. Run docker/build.sh"},
             status=400,
@@ -104,7 +145,11 @@ async def handle_spawn(request: web.Request) -> web.Response:
             "-m", f"Generation {generation} artifact",
         )
     except git_ops.GitError as e:
+        _set_status("idle")
         return web.json_response({"ok": False, "error": f"Git error: {e}"}, status=500)
+
+    # Read campaign-id from body if present (MAY field for M2)
+    campaign_id: str | None = body.get("campaign-id")
 
     # Record in-progress state
     record: dict[str, Any] = {
@@ -114,11 +159,13 @@ async def handle_spawn(request: web.Request) -> web.Response:
         "artifact-hash": "",
         "outcome": "in_progress",
         "artifact_ref": f"gen-{generation}",
-        "created": datetime.now(timezone.utc).isoformat(),
+        "created": datetime.now(UTC).isoformat(),
         "completed": None,
         "container-id": container_id,
         "viability": None,
     }
+    if campaign_id:
+        record["campaign-id"] = campaign_id
     generations.append(record)
 
     # Spawn Test Rig as background task — return immediately
@@ -135,9 +182,13 @@ async def handle_promote(request: web.Request) -> web.Response:
     body: dict[str, Any] = await request.json()
     generation = int(body["generation"])
 
+    _set_status("promoting", generation)
     record = generations.get(generation)
     if not record:
-        return web.json_response({"ok": False, "error": f"Generation {generation} not found"}, status=404)
+        _set_status("idle")
+        return web.json_response(
+            {"ok": False, "error": f"Generation {generation} not found"}, status=404
+        )
 
     artifact_rel = record.get("artifact_ref", f"gen-{generation}")
     artifact_path = Path(git_ops.artifacts_root()) / artifact_rel
@@ -145,25 +196,30 @@ async def handle_promote(request: web.Request) -> web.Response:
     try:
         tag = await git_ops.promote(generation, artifact_path)
     except git_ops.GitError as e:
+        _set_status("idle")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     generations.update(generation, outcome="promoted", artifact_ref=tag)
+    _set_status("idle")
     log.info("generation_promoted", generation=generation, tag=tag)
-    return web.json_response({"ok": True, "generation": generation, "tag": tag})
+    return web.json_response({"ok": True, "generation": generation})
 
 
 async def handle_rollback(request: web.Request) -> web.Response:
     body: dict[str, Any] = await request.json()
     generation = int(body["generation"])
 
+    _set_status("rolling-back", generation)
     try:
         tag = await git_ops.rollback(generation)
     except git_ops.GitError as e:
+        _set_status("idle")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     generations.update(generation, outcome="failed", artifact_ref=tag)
+    _set_status("idle")
     log.info("generation_rolled_back", generation=generation, tag=tag)
-    return web.json_response({"ok": True, "generation": generation, "tag": tag})
+    return web.json_response({"ok": True, "generation": generation})
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +234,7 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     docker = aiodocker.Docker()
+    container: Any = None
     try:
         config: dict[str, Any] = {
             "Image": DOCKER_IMAGE,
@@ -194,9 +251,19 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             name=container_id, config=config
         )
         await container.start()
+        _set_status("testing", generation)
         log.info("test_rig_started", generation=generation, container_id=container_id)
 
-        await container.wait()
+        # Non-blocking wait with configurable timeout to prevent hung containers
+        try:
+            await asyncio.wait_for(container.wait(), timeout=float(CONTAINER_TIMEOUT))
+        except TimeoutError:
+            log.warning("container_timeout", generation=generation, timeout=CONTAINER_TIMEOUT)
+            with contextlib.suppress(Exception):
+                await container.kill()
+            generations.update(generation, outcome="timeout")
+            _set_status("idle")
+            return
 
         # Read viability report written by Test Rig into the mounted volume
         report_path = artifact_path / "viability-report.json"
@@ -208,29 +275,62 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
                 "generation": generation,
                 "status": "non-viable",
                 "failure_stage": "health",
-                "checks": {},
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "diagnostics": {"stage": "health", "summary": "Viability report not written — container crashed"},
+                "checks": {
+                    "manifest": {"passed": False},
+                    "build": {"passed": False, "duration_ms": 0},
+                    "test": {"passed": False, "duration_ms": 0},
+                    "start": {"passed": False, "duration_ms": 0},
+                    "health": {"passed": False, "duration_ms": 0},
+                },
+                "completed_at": datetime.now(UTC).isoformat(),
+                "diagnostics": {
+                    "stage": "health",
+                    "summary": (
+                        "Viability report not written — "
+                        "container crashed or exited without reporting"
+                    ),
+                    "exit_code": None,
+                    "failures": [],
+                    "stdout_tail": "",
+                    "stderr_tail": "",
+                },
             }
             log.warning("viability_report_missing", generation=generation)
 
         # Set outcome to "tested" — Prime will call /promote or /rollback
         generations.update(generation, outcome="tested", viability=viability)
-        log.info("test_rig_complete", generation=generation, viable=viability.get("status") == "viable")
+        viable = viability.get("status") == "viable"
+        log.info("test_rig_complete", generation=generation, viable=viable)
 
-        await container.delete()
     except Exception as e:
         log.error("test_rig_error", generation=generation, error=str(e))
         generations.update(generation, outcome="tested", viability={
             "generation": generation,
             "status": "non-viable",
             "failure_stage": "health",
-            "checks": {},
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "diagnostics": {"stage": "health", "summary": f"Test rig error: {e}"},
+            "checks": {
+                "manifest": {"passed": False},
+                "build": {"passed": False, "duration_ms": 0},
+                "test": {"passed": False, "duration_ms": 0},
+                "start": {"passed": False, "duration_ms": 0},
+                "health": {"passed": False, "duration_ms": 0},
+            },
+            "completed_at": datetime.now(UTC).isoformat(),
+            "diagnostics": {
+                "stage": "health",
+                "summary": f"Test rig infrastructure error: {e}",
+                "exit_code": None,
+                "failures": [],
+                "stdout_tail": "",
+                "stderr_tail": "",
+            },
         })
     finally:
+        if container is not None:
+            with contextlib.suppress(Exception):
+                await container.delete()
         await docker.close()
+        _set_status("idle")
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +342,7 @@ def make_app() -> web.Application:
     app.router.add_get("/", handle_root)
     app.router.add_get("/stats", handle_stats)
     app.router.add_get("/versions", handle_versions)
+    app.router.add_get("/debug/state", handle_debug_state)
     app.router.add_post("/spawn", handle_spawn)
     app.router.add_post("/promote", handle_promote)
     app.router.add_post("/rollback", handle_rollback)
@@ -249,7 +350,9 @@ def make_app() -> web.Application:
 
 
 def main() -> None:
+    global _start_time
     _require_env("ANTHROPIC_API_KEY")
+    _start_time = time.time()
 
     structlog.configure(
         processors=[
@@ -259,7 +362,7 @@ def main() -> None:
         ]
     )
 
-    log.info("supervisor_starting", port=PORT, artifacts_root=git_ops.artifacts_root())
+    log.info("supervisor_ready", port=PORT, artifacts_root=git_ops.artifacts_root())
     web.run_app(make_app(), host="0.0.0.0", port=PORT)
 
 
