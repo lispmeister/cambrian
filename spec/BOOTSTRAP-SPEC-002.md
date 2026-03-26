@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.1
+version: 0.8.2
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -352,6 +352,26 @@ The Supervisor tracks its own state:
 3. Initialize git repo if needed (git init, create main branch)
 4. Start HTTP server on port 8400
 5. Log: "Supervisor ready on http://0.0.0.0:8400"
+```
+
+**Required environment variables:**
+
+| Variable | Required | Default | Notes |
+|----------|----------|---------|-------|
+| `ANTHROPIC_API_KEY` | MUST | — | Fatal error if missing. |
+| `CAMBRIAN_ARTIFACTS_ROOT` | SHOULD | `../cambrian-artifacts` | Path to the artifacts git repo. |
+| `DOCKER_HOST` | SHOULD (macOS) | — | On macOS with Docker Desktop, `aiodocker` does not reliably resolve the Docker socket via the default `/var/run/docker.sock` symlink. Set `DOCKER_HOST=unix:///Users/<you>/.docker/run/docker.sock` (or the value of `$HOME/.docker/run/docker.sock`) before starting the Supervisor. On Linux, `unix:///var/run/docker.sock` is the real socket and works without this variable. |
+| `CAMBRIAN_CONTAINER_TIMEOUT` | MAY | `600` | Seconds before a container is killed. |
+| `CAMBRIAN_SUPERVISOR_PORT` | MAY | `8400` | HTTP port to bind. |
+| `CAMBRIAN_DOCKER_IMAGE` | MAY | `cambrian-base` | Docker image name for Test Rig containers. |
+
+**macOS start example:**
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... \
+CAMBRIAN_ARTIFACTS_ROOT=../cambrian-artifacts \
+DOCKER_HOST=unix://$HOME/.docker/run/docker.sock \
+uv run python -m supervisor.supervisor
 ```
 
 ### 1.5 File Layout
@@ -865,6 +885,8 @@ All containers use Docker's default bridge network:
 - **DNS**: Docker bridge provides DNS resolution for external hosts.
 
 No custom Docker networks are needed for M1.
+
+**Docker socket (macOS):** On macOS with Docker Desktop, the default `/var/run/docker.sock` is a symlink that `aiodocker` does not reliably follow when inspecting images or creating containers. The Supervisor MUST be started with `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock` on macOS. Without this, `aiodocker.Docker().images.inspect()` raises an exception and `/spawn` returns `{"ok": false, "error": "Docker image not found"}` even though the image exists. This is a Docker Desktop behaviour, not an `aiodocker` bug — the real socket for Docker Desktop lives at `~/.docker/run/docker.sock`. On Linux, `/var/run/docker.sock` is the real socket and no override is needed.
 
 ### 3.3 Credential Injection
 
