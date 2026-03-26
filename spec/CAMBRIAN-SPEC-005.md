@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.2
+version: 0.10.3
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -61,7 +61,7 @@ Prime MUST serve these endpoints on port 8401:
 | GET | `/stats` | `200 OK` — body: `{"generation": N, "status": "idle", "uptime": S}` |
 
 - `/health` is a liveness check. No preconditions. Always returns 200.
-- `/stats` — `generation` MUST match the artifact's generation number. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start. **Startup behavior:** before the generation loop determines the generation number (step 1 of the loop), `/stats` returns `generation: 0`. Once step 1 completes, `/stats` reflects the active generation number for the duration of that attempt.
+- `/stats` — `generation` is Prime's own generation number — the value of the `CAMBRIAN_GENERATION` environment variable set by the Supervisor at spawn time (same as the `generation` field in Prime's own manifest). This is a fixed identity; it does not change as the loop produces offspring. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start. If `CAMBRIAN_GENERATION` is not set (e.g., local dev), `generation` is 0.
 
 ### Supervisor HTTP API (Prime calls these)
 
@@ -218,7 +218,7 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 ### Step by step
 
-1. **Determine generation number.** `GET /versions` → find the highest generation number → next is N+1. If no history, N=1. This is also the value Prime returns from `GET /stats` as `generation`.
+1. **Determine generation number.** `GET /versions` → find the highest generation number across all records → offspring is N+1. If no history, N=0 so offspring is 1. This is the generation number written into the offspring's manifest and used for the `/spawn` call — it is NOT the value Prime reports from `/stats` (that is always Prime's own generation from `CAMBRIAN_GENERATION`).
 
 2. **Read the spec.** Load from `CAMBRIAN_SPEC_PATH` (default `./spec/CAMBRIAN-SPEC-005.md`). Compute its SHA-256 hash.
 
