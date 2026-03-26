@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.2
+version: 0.8.3
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -167,7 +167,7 @@ All POST endpoints return `{"ok": false, "error": "..."}` on failure.
 | Field | Required | Rule |
 |-------|----------|------|
 | `generation` | MUST | Integer. The generation number being produced. |
-| `artifact-path` | MUST | String. Absolute host-side path to the artifact directory. |
+| `artifact-path` | MUST | String. Path relative to `CAMBRIAN_ARTIFACTS_ROOT`. The Supervisor resolves it to an absolute host path for the Docker bind mount. Example: `"gen-2"` resolves to `$CAMBRIAN_ARTIFACTS_ROOT/gen-2`. Prime runs inside Docker and cannot know the host-side absolute path — it MUST send a relative path. |
 | `spec-hash` | MUST | String. SHA-256 hex of the spec file (with `sha256:` prefix). |
 
 `POST /spawn` response: `{"ok": true, "container-id": "lab-gen-N", "generation": N}`
@@ -1382,7 +1382,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.8.1"
+version: "0.8.3"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

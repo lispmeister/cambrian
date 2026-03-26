@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.1
+version: 0.10.2
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -71,7 +71,7 @@ The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://ho
 |--------|------|-------------|-----------------|
 | GET | `/versions` | — | `[GenerationRecord, ...]` |
 | GET | `/stats` | — | `{"generation": N, "status": "...", "uptime": N}` |
-| POST | `/spawn` | `{"spec-hash": "...", "generation": N, "artifact-path": "/path"}` | `{"ok": true, "container-id": "...", "generation": N}` |
+| POST | `/spawn` | `{"spec-hash": "...", "generation": N, "artifact-path": "gen-N"}` | `{"ok": true, "container-id": "...", "generation": N}` |
 | POST | `/promote` | `{"generation": N}` | `{"ok": true, "generation": N}` |
 | POST | `/rollback` | `{"generation": N}` | `{"ok": true, "generation": N}` |
 
@@ -228,9 +228,9 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 5. **Parse the response.** Extract files from `<file path="...">content</file>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
 
-6. **Write files to workspace.** Create a directory for the artifact. Write all parsed files. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata. If the spec file contains a JSON array under a fenced code block marked with `contracts` (e.g., ` ```contracts `) include that array verbatim as the `contracts` field in `manifest.json`. This is how spec-defined contracts propagate to the manifest without passing through the LLM.
+6. **Write files to workspace.** Create a subdirectory `./gen-{N}/` inside `/workspace` for the artifact. Write all parsed files into it. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata. If the spec file contains a JSON array under a fenced code block marked with `contracts` (e.g., ` ```contracts `) include that array verbatim as the `contracts` field in `manifest.json`. This is how spec-defined contracts propagate to the manifest without passing through the LLM.
 
-7. **Request verification.** `POST /spawn` with the artifact path, spec-hash, and generation number. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git.
+7. **Request verification.** `POST /spawn` with `"artifact-path": "gen-{N}"` (relative to `CAMBRIAN_ARTIFACTS_ROOT`), `spec-hash`, and `generation`. The Supervisor resolves the relative path to an absolute host path for the Docker bind mount. The Supervisor handles all git operations (branch creation, commit). Prime MUST NOT touch git. Prime MUST NOT send an absolute path — it runs inside Docker and cannot know the host-side path.
 
 8. **Poll.** `GET /versions` until the generation record's outcome is no longer `in_progress`. The Supervisor sets the outcome to `tested` once the Test Rig container exits. Poll interval: 2 seconds.
 
@@ -569,7 +569,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.10.1"
+version: "0.10.2"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
