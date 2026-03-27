@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.5
+version: 0.11.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -224,7 +224,7 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 3. **Build the LLM prompt.** See [LLM Integration](#llm-integration) below.
 
-4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: `claude-opus-4-6`). The response contains file contents in tagged blocks.
+4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: `claude-sonnet-4-6`) on the first attempt (`retry_count == 0`); `CAMBRIAN_ESCALATION_MODEL` (default: `claude-opus-4-6`) on any retry (`retry_count >= 1`). The response contains file contents in tagged blocks.
 
 5. **Parse the response.** Extract files from `<file path="...">content</file:end>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
 
@@ -250,7 +250,7 @@ Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
 
 | Failure | Trigger | Response |
 |---------|---------|----------|
-| Unparseable LLM output | LLM returns malformed or incomplete `<file>` blocks | Record failed attempt. Retry with fresh LLM call (up to `CAMBRIAN_MAX_RETRIES`). |
+| Unparseable LLM output | `parse_files()` raises `ParseError` | Attempt parse repair (up to `CAMBRIAN_MAX_PARSE_RETRIES`, default 2). If all parse repairs fail, record as a failed attempt and retry with a fresh LLM call (up to `CAMBRIAN_MAX_RETRIES`). |
 | Build failure | `entry.build` exits non-zero | Non-viable verdict from Test Rig. Rollback, then retry as informed retry. |
 | Test failure | `entry.test` exits non-zero | Non-viable verdict. Rollback, then retry. |
 | Start timeout | Prime doesn't bind HTTP port within 10s | Non-viable verdict. Rollback, then retry. |
@@ -278,7 +278,28 @@ Prime instructs the LLM to emit files as tagged blocks:
 </file:end>
 ```
 
-Prime parses these blocks with a simple regex: `<file path="([^"]+)">(.*?)</file:end>` (dotall mode). Anything outside `<file>` blocks is ignored (the LLM may emit commentary). The `:end` suffix makes the closing tag unique — it cannot appear in natural file content, preventing the parser from matching an inner `</file>` tag that appears inside a test fixture string.
+Prime parses these blocks with a **line-by-line state machine** — NOT a dotall regex. A dotall regex fails when file content contains `<file>` or `</file>` literals (e.g. in test fixtures), because the non-greedy `.*?` stops at the first `</file:end>` it finds, silently truncating the block. The state machine is not confused by this.
+
+```python
+current_path: str | None = None
+current_lines: list[str] = []
+files: dict[str, str] = {}
+for line in response.splitlines(keepends=True):
+    if current_path is None:
+        m = re.match(r'<file path="([^"]+)">', line)
+        if m:
+            current_path = m.group(1)
+            current_lines = []
+    elif line.rstrip("\n\r") == "</file:end>":
+        files[current_path] = "".join(current_lines)
+        current_path = None
+    else:
+        current_lines.append(line)
+if current_path is not None:
+    raise ParseError(f"Unclosed <file path={current_path!r}> block")
+```
+
+A response that opens a `<file>` block without a matching `</file:end>` is malformed — raise `ParseError`. Anything outside `<file>` blocks (LLM commentary) is silently discarded. The `:end` suffix makes the closing delimiter unique — it cannot appear in natural file content.
 
 ### Fresh generation prompt
 
@@ -361,6 +382,29 @@ Parent generation: {parent}
 
 Prime reads the failed source code from the local filesystem — the files are still on disk from the previous write. Prime MUST NOT use git to read files (see Invariants).
 
+### Parse repair prompt
+
+When `parse_files()` raises `ParseError`, Prime MAY attempt an in-place repair before counting the failure as a generation retry. The repair prompt feeds the raw malformed response back to the LLM with an explicit error message. Use the same model as the current generation attempt — do NOT escalate for parse repairs.
+
+**User message:**
+
+```
+# Parse Error
+
+The previous response could not be parsed. Error: {parse_error_message}
+
+# Malformed Response
+
+{raw_llm_response}
+
+# Task
+
+Re-emit the EXACT SAME files using the correct format. Every <file> block MUST have a
+matching </file:end> on its own line. No nesting. No extra content between blocks.
+```
+
+Maximum parse retries: `CAMBRIAN_MAX_PARSE_RETRIES` (default 2). A successful parse after a repair does NOT consume a generation retry. If all parse repairs fail, the generation counts as one failed attempt and the normal retry logic applies.
+
 ## Implementation Requirements
 
 ### Language and runtime
@@ -427,10 +471,12 @@ The test suite MUST cover:
 - Manifest building produces valid JSON with all MUST fields
 - `spec-hash` computation matches SHA-256 of the spec file
 - `artifact-hash` computation excludes `manifest.json`
-- LLM response parsing extracts files from `<file>` blocks correctly
-- LLM response parsing handles malformed responses gracefully
+- LLM response parsing extracts files from `<file>` blocks correctly (state machine, not regex)
+- LLM response parsing handles malformed responses gracefully (raises `ParseError`)
+- Parse repair loop retries on `ParseError` up to `CAMBRIAN_MAX_PARSE_RETRIES`
 - Generation number is computed correctly from history
 - Retry counter increments and respects `CAMBRIAN_MAX_RETRIES`
+- Model escalates to `CAMBRIAN_ESCALATION_MODEL` on `retry_count >= 1`
 
 Tests MUST be runnable with `python -m pytest tests/ -v`.
 
@@ -439,9 +485,11 @@ Tests MUST be runnable with `python -m pytest tests/ -v`.
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `ANTHROPIC_API_KEY` | MUST | — | LLM API authentication |
-| `CAMBRIAN_MODEL` | MAY | `claude-opus-4-6` | LLM model for generation |
+| `CAMBRIAN_MODEL` | MAY | `claude-sonnet-4-6` | LLM model for the first generation attempt |
+| `CAMBRIAN_ESCALATION_MODEL` | MAY | `claude-opus-4-6` | LLM model for retry attempts (`retry_count >= 1`) |
 | `CAMBRIAN_MAX_GENS` | MAY | `5` | Max generation attempts before stopping |
 | `CAMBRIAN_MAX_RETRIES` | MAY | `3` | Max consecutive failures before stopping |
+| `CAMBRIAN_MAX_PARSE_RETRIES` | MAY | `2` | Max parse repair attempts before counting as a generation failure |
 | `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://host.docker.internal:8400` | Supervisor endpoint (Prime runs in a container; use `host.docker.internal` to reach the host) |
 | `CAMBRIAN_SPEC_PATH` | MAY | `./spec/CAMBRIAN-SPEC-005.md` | Path to spec file |
 | `CAMBRIAN_TOKEN_BUDGET` | MAY | `0` | Max cumulative tokens (0 = unlimited) |
@@ -455,9 +503,11 @@ Tests MUST be runnable with `python -m pytest tests/ -v`.
 - `manifest.json` has all MUST fields, correct types
 - `spec-hash` matches SHA-256 of spec file
 - `artifact-hash` matches SHA-256 of all files except manifest
-- LLM response parsing extracts `<file>` blocks correctly
+- LLM response parsing extracts `<file>` blocks correctly (state machine)
+- Parse repair loop retries up to `CAMBRIAN_MAX_PARSE_RETRIES` on `ParseError`
 - Generation loop calls Supervisor API in correct sequence
 - Retry logic stops at `CAMBRIAN_MAX_RETRIES`
+- Model escalates to `CAMBRIAN_ESCALATION_MODEL` on retry
 
 ### Behavioral (code review verifies)
 
