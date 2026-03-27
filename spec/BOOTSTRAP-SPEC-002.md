@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.3
+version: 0.8.4
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -309,6 +309,11 @@ async def run_test_rig(generation, artifact_path, container_id):
         with contextlib.suppress(Exception):
             await container.delete()
         await client.close()
+        # Remove __pycache__/ and .pytest_cache/ left by the container in the
+        # bind-mounted workspace. PYTHONDONTWRITEBYTECODE=1 in the Dockerfile is
+        # the primary guard; this is a safety net for subprocesses that bypass it.
+        for cache_dir in (*artifact_path.rglob("__pycache__"), *artifact_path.rglob(".pytest_cache")):
+            shutil.rmtree(cache_dir, ignore_errors=True)
 ```
 
 **Git Operations:**
@@ -855,6 +860,11 @@ A single Dockerfile produces the `cambrian-base` image used by all containers.
 ```dockerfile
 FROM python:3.14-slim
 
+# Never write .pyc files — the container is ephemeral, bytecode caching has
+# no benefit, and it prevents __pycache__/ from leaking into the bind-mounted
+# artifact workspace on the host.
+ENV PYTHONDONTWRITEBYTECODE=1
+
 # Create virtual environment (activated for all subsequent commands)
 RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
@@ -872,6 +882,7 @@ ENTRYPOINT ["python", "/test-rig/test_rig.py"]
 **Notes:**
 
 - `python:3.14-slim` is the standard Python 3.14 image. Free-threaded build (3.14t) is deferred to M2.
+- `PYTHONDONTWRITEBYTECODE=1` MUST be set. Without it, every `pytest` and `python` invocation writes `__pycache__/` directories into `/workspace`, which leak through the bind mount onto the host filesystem. The container is ephemeral — bytecode caching provides no benefit.
 - A virtual environment at `/venv` is created at image build time and activated via `PATH`. All `pip install` commands (including `entry.build`) install into `/venv`, never the system Python.
 - The Test Rig is baked in so every container can verify artifacts without additional setup.
 - When running Prime (not the Test Rig), the entrypoint is overridden: `docker run --entrypoint python cambrian-base src/prime.py`.
