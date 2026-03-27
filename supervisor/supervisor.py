@@ -120,17 +120,31 @@ async def handle_spawn(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # Verify Docker image exists
+    # Verify Docker image exists.
+    # Use list() instead of inspect() — on Docker Desktop, inspect() returns 404
+    # for images that exist (list() sees them correctly).
     _set_status("spawning", generation)
     docker = aiodocker.Docker()
     try:
-        await docker.images.inspect(DOCKER_IMAGE)
-    except Exception:
+        images = await docker.images.list()
+        image_tag = DOCKER_IMAGE if ":" in DOCKER_IMAGE else f"{DOCKER_IMAGE}:latest"
+        found = any(
+            image_tag in (img.get("RepoTags") or [])
+            for img in images
+        )
+        if not found:
+            await docker.close()
+            _set_status("idle")
+            return web.json_response(
+                {"ok": False, "error": f"Docker image {DOCKER_IMAGE} not found. Run docker/build.sh"},
+                status=400,
+            )
+    except Exception as e:
         await docker.close()
         _set_status("idle")
         return web.json_response(
-            {"ok": False, "error": f"Docker image {DOCKER_IMAGE} not found. Run docker/build.sh"},
-            status=400,
+            {"ok": False, "error": f"Docker error checking image: {e}"},
+            status=500,
         )
     await docker.close()
 
