@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.3
+version: 0.10.4
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -295,6 +295,11 @@ Rules:
 - The code must work in Python 3.14 inside a Docker container with a venv at /venv.
 - Do NOT include manifest.json — it is generated separately.
 - Do NOT include the spec file — it is copied separately.
+- Python 3.14 STRICT: string literals MUST NOT contain unescaped newlines. Use triple
+  quotes (""" or ''') for multi-line strings. Use \n for embedded newlines in
+  single-line strings. A bare newline inside "..." or '...' is a SyntaxError.
+- Test strings that embed XML-like content (e.g. <file> blocks) MUST use raw strings
+  (r"...") or triple-quoted strings to avoid escaping issues.
 ```
 
 **User message:**
@@ -368,6 +373,21 @@ Prime reads the failed source code from the local filesystem — the files are s
 - Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
 - Type annotations: full coverage, Pyright strict compatible
 - Validation: Pydantic v2 for all I/O boundary data (manifest, viability report, API responses)
+
+### Python 3.14 syntax constraints
+
+Python 3.14 enforces stricter syntax rules than earlier versions. Generated code MUST comply:
+
+- **No implicit line continuation inside strings.** A newline character inside a `"..."` or
+  `'...'` string literal is a `SyntaxError`. Python 3.12 made this a `SyntaxWarning`;
+  Python 3.14 promotes it to a hard error.
+  - Wrong: `s = "first line\nsecond line"` split naively across two physical lines
+  - Correct: `s = "first line\nsecond line"` (on one line) or `s = """first line\nsecond line"""`
+- **Triple quotes for multi-line strings.** Any string that spans multiple source lines MUST
+  use `"""..."""` or `'''...'''`.
+- **Test code is especially vulnerable.** Tests that embed XML-like content (`<file>` blocks,
+  HTML tags, multi-line expected output) frequently trigger this error. Use raw strings
+  (`r"..."`) or triple-quoted strings in test assertions.
 
 ### Startup sequence
 
@@ -569,7 +589,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.10.2"
+version: "0.10.4"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
