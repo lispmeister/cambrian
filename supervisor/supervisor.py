@@ -237,13 +237,30 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
     docker = aiodocker.Docker()
     container: Any = None
     try:
+        # Build env list: required vars always set; optional vars threaded through
+        # from the supervisor's own environment only if explicitly set there.
+        _optional_vars = [
+            "CAMBRIAN_MODEL",
+            "CAMBRIAN_ESCALATION_MODEL",
+            "CAMBRIAN_MAX_PARSE_RETRIES",
+            "CAMBRIAN_MAX_RETRIES",
+            "CAMBRIAN_MAX_GENS",
+            "CAMBRIAN_TOKEN_BUDGET",
+            "CAMBRIAN_SPEC_PATH",
+        ]
+        env_list = [
+            f"ANTHROPIC_API_KEY={api_key}",
+            f"CAMBRIAN_SUPERVISOR_URL={SUPERVISOR_URL}",
+            f"CAMBRIAN_GENERATION={generation}",
+        ]
+        for var in _optional_vars:
+            val = os.environ.get(var)
+            if val is not None:
+                env_list.append(f"{var}={val}")
+
         config: dict[str, Any] = {
             "Image": DOCKER_IMAGE,
-            "Env": [
-                f"ANTHROPIC_API_KEY={api_key}",
-                f"CAMBRIAN_SUPERVISOR_URL={SUPERVISOR_URL}",
-                f"CAMBRIAN_GENERATION={generation}",
-            ],
+            "Env": env_list,
             "HostConfig": {
                 "Binds": [f"{artifact_path.resolve()}:/workspace:rw"],
             },
