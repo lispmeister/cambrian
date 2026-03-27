@@ -1,5 +1,9 @@
 FROM python:3.14-slim
 
+# Never write .pyc files — the container is ephemeral, bytecode caching has no benefit,
+# and it prevents __pycache__ from leaking into the bind-mounted artifact workspace.
+ENV PYTHONDONTWRITEBYTECODE=1
+
 # Install git (needed by Test Rig for artifact inspection)
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 

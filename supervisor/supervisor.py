@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -330,6 +331,11 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             with contextlib.suppress(Exception):
                 await container.delete()
         await docker.close()
+        # Remove __pycache__ and .pytest_cache left by the container in the bind-mounted
+        # workspace. The Dockerfile sets PYTHONDONTWRITEBYTECODE=1 as the primary guard;
+        # this is a safety net for any subprocesses that bypass that env var.
+        for cache_dir in (*artifact_path.rglob("__pycache__"), *artifact_path.rglob(".pytest_cache")):
+            shutil.rmtree(cache_dir, ignore_errors=True)
         _set_status("idle")
 
 
