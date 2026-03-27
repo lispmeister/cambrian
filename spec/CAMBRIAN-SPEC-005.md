@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.10.4
+version: 0.10.5
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -226,7 +226,7 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 4. **Call the LLM.** Use the Anthropic API (`ANTHROPIC_API_KEY` from environment). Model: `CAMBRIAN_MODEL` (default: `claude-opus-4-6`). The response contains file contents in tagged blocks.
 
-5. **Parse the response.** Extract files from `<file path="...">content</file>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
+5. **Parse the response.** Extract files from `<file path="...">content</file:end>` blocks. Each block is one file. The `path` attribute is relative to the artifact root.
 
 6. **Write files to workspace.** Create a subdirectory `./gen-{N}/` inside `/workspace` for the artifact. Write all parsed files into it. Copy the spec file into the artifact at its expected path. Write `manifest.json` with computed hashes and metadata. If the spec file contains a JSON array under a fenced code block marked with `contracts` (e.g., ` ```contracts `) include that array verbatim as the `contracts` field in `manifest.json`. This is how spec-defined contracts propagate to the manifest without passing through the LLM.
 
@@ -271,14 +271,14 @@ Prime instructs the LLM to emit files as tagged blocks:
 #!/usr/bin/env python3
 """Prime — the organism."""
 ...
-</file>
+</file:end>
 
 <file path="tests/test_prime.py">
 ...
-</file>
+</file:end>
 ```
 
-Prime parses these blocks with a simple regex: `<file path="([^"]+)">(.*?)</file>` (dotall mode). Anything outside `<file>` blocks is ignored (the LLM may emit commentary).
+Prime parses these blocks with a simple regex: `<file path="([^"]+)">(.*?)</file:end>` (dotall mode). Anything outside `<file>` blocks is ignored (the LLM may emit commentary). The `:end` suffix makes the closing tag unique — it cannot appear in natural file content, preventing the parser from matching an inner `</file>` tag that appears inside a test fixture string.
 
 ### Fresh generation prompt
 
@@ -288,7 +288,7 @@ Prime parses these blocks with a simple regex: `<file path="([^"]+)">(.*?)</file
 You are a code generator. You produce complete, working Python codebases from specifications.
 
 Rules:
-- Output ONLY <file path="...">content</file> blocks. One block per file.
+- Output ONLY <file path="...">content</file:end> blocks. One block per file.
 - Every file needed to build, test, and run the project must be in a <file> block.
 - Include a requirements.txt with all dependencies.
 - Include a test suite that exercises all functionality.
@@ -589,7 +589,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.10.4"
+version: "0.10.5"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
