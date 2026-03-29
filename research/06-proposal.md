@@ -1,28 +1,32 @@
 # Proposal: Genome Evolution for Cambrian M2
 
-**Version**: 0.1 — first draft
+**Version**: 0.2 — revised after adversarial review (file 08)
 **Status**: Proposal, not spec
-**Date**: 2026-03-25
+**Date**: 2026-03-29 (originally 2026-03-25)
 
 ---
 
 ## The Thesis
 
-Every self-improving agent system we studied mutates implementations. AlphaEvolve mutates matrix kernels. FunSearch mutates mathematical functions. Darwin Godel Machine mutates its own source code. All of them treat the specification as fixed and the implementation as the thing that evolves.
+Many self-improving agent systems mutate implementations directly. AlphaEvolve mutates matrix kernels. FunSearch mutates mathematical functions. Darwin Godel Machine mutates its own source code. Others — PromptBreeder, VisionForge, TextGrad, DSPy — evolve structured text artifacts (prompts, behavioral specifications, module signatures) via LLM. A-Evolve (Amazon, 2026) evolves agent workspace files (prompts, skills, memory) under benchmark selection pressure. Text evolution via LLM is not new. But all of these systems treat the evolved artifact as the output — the prompt IS the thing used, the code IS the thing executed.
 
-Cambrian should invert this.
+Cambrian should add a level of indirection.
 
-**The spec is the genome. Prime is the universal constructor. What evolves is the genome.**
+**The spec is the genome. Prime is the universal constructor. What evolves is the genome, not the phenotype.**
 
-This isn't just a philosophical difference. It's a qualitative architectural advantage:
+This isn't just a philosophical difference. The genotype-phenotype indirection is a qualitative architectural advantage over direct evolution:
 
 1. The spec is *legible*. A human can read a mutated spec and understand what it means. You cannot read mutated neural network weights or evolved machine code.
 
-2. The spec is *composable*. You can take section 3 from Spec A and section 7 from Spec B and produce a coherent hybrid. You cannot meaningfully splice sections of bytecode.
+2. The spec is *composable*. You can take section 3 from Spec A and section 7 from Spec B and produce a coherent hybrid. You cannot meaningfully splice sections of bytecode. (But see §Modularity Pressure below — composability degrades under entanglement.)
 
 3. The spec is *versioned*. Every spec mutation is a diff against the parent. The entire lineage of evolution is a git history of spec changes. You can observe *why* each generation was better or worse.
 
-4. The spec is *safe to evolve*. Prime cannot modify the spec (Invariant 1). The Test Rig is invariant (Invariant 2). The container is the boundary. These aren't constraints on evolution — they're what make safe evolution possible. Darwin Godel Machine failed because it could touch its own evaluator. Cambrian structurally cannot.
+4. The spec is *safe to evolve*. Prime cannot modify the spec (Invariant 1). The Test Rig is invariant (Invariant 2). The container is the boundary. These aren't constraints on evolution — they're what make safe evolution possible. (But see §Container Isolation below — the execution boundary must be hardened.)
+
+5. The spec has *recursive fitness*. The offspring must read its own spec and reproduce. This self-reproduction requirement is unlike anything in prompt optimization or code evolution — it tests not just the output quality but whether the output can itself be a constructor.
+
+What's novel is NOT "evolving text via LLM" — PromptBreeder, VisionForge, and others do that. What's novel is the *indirection*: evolving a specification that a separate constructor interprets to produce an implementation, at multi-thousand-word document scale, with recursive self-reproduction as the fitness test.
 
 ---
 
@@ -62,21 +66,33 @@ At the end of each campaign, the meta-loop:
 
 ---
 
-## The Spec Population and MAP-Elites
+## The Spec Population: Staged Algorithm
 
-The spec population is not a flat list. It's a **MAP-Elites archive** — a multi-dimensional grid where each cell holds the best-performing spec variant for that behavioral niche.
+*Revised after adversarial review (file 08, §4). MAP-Elites needs hundreds of evaluations to populate a 4D archive. Cambrian's evaluation budget is ~50–100 campaigns at current costs. The algorithm must match the budget.*
 
-The behavior descriptor uses 4 of the 15 fitness dimensions:
+### Stage 1 (~20–30 campaigns): Single-Objective Bayesian Optimization
+
+Start simple. One objective: maximize viability rate. BO is state-of-the-art for single-objective expensive optimization with small budgets. The GP surrogate models the fitness landscape cheaply; the acquisition function balances exploration and exploitation without manual scheduling.
+
+No population, no archive, no behavioral dimensions. Just: which spec mutation most likely improves viability? A-Evolve's results (file 07) validate that single-lineage evolution is a competitive starting point.
+
+### Stage 2 (~50–100 campaigns): BOP-Elites
+
+When viability is reliable and we want diversity, upgrade to BOP-Elites (Kent & Branke, 2023, arXiv 2307.09326) — Bayesian Optimization of Elites. Models fitness AND behavioral descriptors with GP surrogates. Designed for "problems with expensive black-box fitness and behavior functions." Add 2 behavioral dimensions:
+
 1. **Viability rate**: fraction of generations that pass the Test Rig
 2. **Token economy**: input + output tokens per generation (inverse — lower is better)
+
+### Stage 3 (200+ campaigns): Full MAP-Elites
+
+Only when the budget supports it. Expand to 4 behavioral dimensions:
+
 3. **Time to viability**: generations until first viable artifact
 4. **Fitness trend**: slope of viability improvement across generations
 
-Each cell in the 4D grid holds the spec that achieves the best *campaign fitness score* for that combination of behavioral dimensions. The archive is sparse — most cells are empty initially, filling as evolution progresses.
+Each cell in the 4D grid holds the spec that achieves the best campaign fitness score for that combination of behavioral dimensions.
 
-**Why MAP-Elites over hill-climbing**: We don't know which region of the fitness space matters for the next task. A spec that's excellent at producing fast code but poor at correctness might be exactly what we need when we move from the echo server to a compute-intensive task. The archive preserves all solutions, not just the current winner.
-
-**Why 4 dimensions not 15**: Higher-dimensional MAP-Elites archives are exponentially sparser. 4 dimensions gives a manageable archive that covers the most important trade-offs.
+**Why staged over MAP-Elites from day one**: The M2 success experiment is 10 campaigns. A 625-cell archive (5 bins × 4 dims) would be ~98% empty. The archive is useless until it's populated enough to provide selection diversity. Start with what works at small scale, add complexity when the data supports it.
 
 ---
 
@@ -107,13 +123,15 @@ The Spec Mutator is a new component — not Prime, not the Supervisor, not the T
 - Expected behavior: Initially worse, potentially much better
 - Protection needed: **Speciation** — run the restructured variant in an isolated campaign track for 3 campaigns before comparing to the main population. NEAT's lesson: structural innovations need time to develop before they face full selection pressure.
 
-### The Dual Model
+### Mutation Model and Screening
 
-Following AlphaEvolve's architecture:
+*Revised after adversarial review (file 08, §5). The dual-model screener is vulnerable to Adversarial Goodhart — under selection pressure, specs will evolve to look coherent to the screener without being coherent. "One Token to Fool LLM-as-a-Judge" (arXiv 2507.08794) shows 80% false positive rates. ThetaEvolve (arXiv 2511.23473) achieved SOTA without a screener.*
+
 - **Mutator model** (expensive, creative): claude-opus-4-6. Proposes spec mutations. Called infrequently.
-- **Screener model** (fast, critical): claude-sonnet-4-6. Pre-screens proposed mutations for obvious coherence violations before running a campaign. "Does this spec still describe a coherent system?" If no, discard without running.
+- **Screening via short campaign**: Instead of an LLM judge, run a 2-generation mini-campaign. If neither generation passes Tier 0 viability, the mutation is rejected. The Test Rig is the judge — deterministic, immutable, ungameable.
+- **Deterministic invariant check**: `grep` the mutated spec for the frozen invariant text. If any invariant is altered, reject without running. This is string comparison, not LLM judgment.
 
-The screener model doesn't evaluate fitness — only coherence. It prevents wasting campaign budget on incoherent mutations.
+Budget impact: mini-campaigns cost more than a Sonnet call per-mutation but provide real fitness signal rather than surface-level coherence estimates. They also serve as the first data point for the BO surrogate model.
 
 ---
 
@@ -196,47 +214,123 @@ Failure becomes a structured stepping stone, not just a binary outcome to avoid.
 
 ---
 
-## Neutral Drift Periods
+## Exploration-Exploitation Balance
 
-Every 10 campaigns, trigger a **neutral drift period**: for 2 campaigns, the selection criterion is *anything that passes Tier 0 viability* — not fitness ranking. All viable specs continue regardless of fitness vector scores.
+*Revised after adversarial review (file 08, §8). Fixed neutral drift periods waste 20% of budget. In a 10-campaign experiment, 2 neutral drift campaigns generate no directional signal. Temperature annealing is strictly better.*
 
-**Why**: Under constant selection pressure, the spec population converges. Neutral drift allows structurally different specs to accumulate without being eliminated. When the task changes (new spec, harder requirements), the diverse population adapts faster than a monoculture.
+### Stage 1–2 (BO / BOP-Elites)
 
-**Implementation**: The meta-monitor triggers neutral drift. During neutral drift, all Tier 0 viable campaign results are added to the archive regardless of where they fall in the MAP-Elites grid.
+The acquisition function handles exploration/exploitation automatically. No neutral drift needed — the GP uncertainty estimate IS the exploration signal. When the model is uncertain about a region, it explores; when confident, it exploits.
+
+### Stage 3 (MAP-Elites)
+
+Replace fixed neutral drift with **CMA-MAE temperature annealing** (arXiv 2205.10752): a temperature parameter smoothly interpolates between uniform acceptance (exploration) and elitist selection (exploitation). Temperature decays over time — exploration when the archive is sparse, exploitation when it's populated. No manual scheduling, no wasted budget.
+
+**Adaptive trigger**: If the meta-monitor detects archive diversity collapsing, increase the temperature parameter. If fitness is improving steadily, let it decay. This replaces the fixed "every 10 campaigns" schedule with a responsive mechanism.
+
+---
+
+## Container Isolation (New — from adversarial review, file 08 §6)
+
+*Highest-priority fix identified by adversarial review. Under evolutionary pressure, organisms WILL find filesystem-based attacks on the Test Rig if the execution boundary is permeable.*
+
+The organism's `entry.build`, `entry.test`, and `entry.start` execute inside the container. The Test Rig evaluates the organism's output. If both share the same filesystem with the same permissions, a mutated spec could describe code that writes a fake `viability-report.json`, modifies test-rig code between pipeline stages, or reads the Test Rig source to reverse-engineer what passes.
+
+The frozen invariants prevent Prime from *writing* such instructions in the spec. But under evolutionary pressure, mutations to the spec will discover indirect paths — describing code that manipulates the filesystem as a side-effect of "legitimate" operations.
+
+**Requirements**:
+1. Organism commands (`entry.build`, `entry.test`, `entry.start`) run in a separate process namespace from the Test Rig
+2. `/test-rig/` is not mounted in the organism's namespace (or mounted read-only at most)
+3. Organism commands run as non-root user
+4. The Test Rig evaluates against a fresh copy of the workspace, not the one the organism may have modified
+5. The viability report is written by the Test Rig, never by the organism
+
+This is not speculative — it's documented in evolutionary computation literature (Lehman et al., "Surprising Creativity of Digital Evolution") where organisms evolved to delete target files to achieve perfect fitness.
+
+---
+
+## Modularity Pressure (New — from adversarial review, file 08 §2)
+
+*The monolithic spec will evolve toward entanglement without explicit pressure to maintain modularity.*
+
+Clune (Royal Society, 2013): modularity evolves only when there is a connection cost. Without this pressure, systems remain monolithic and entangled. The M2 spec has no modularity pressure — no penalty for cross-section dependencies.
+
+**Prediction**: Over many mutations, sections will develop increasing cross-references and implicit dependencies. Type 2 (transplant) mutations will produce more breakage as entanglement grows. The spec becomes less composable over time, not more.
+
+**Mitigations**:
+1. **Section-level fitness attribution**: After each mutation, diff the spec and attribute fitness changes to specific sections. Track which sections contributed positively and which degraded. This is the precondition for detecting linkage drag (beneficial mutation in one section dragging harmful changes in adjacent sections).
+2. **Entanglement monitoring**: Track how many sections each mutation must touch to achieve improvement. If this number trends upward, entanglement is growing.
+3. **Modularity as a fitness dimension** (Stage 2+): Add a behavioral descriptor for spec modularity — e.g., number of cross-section references, section independence score. MAP-Elites will then preserve both modular and entangled variants, allowing evolution to discover whether modularity helps.
+
+---
+
+## Adaptive Test Generation (New — from adversarial review, file 08 §9)
+
+*The Red Queen tiers are a fixed curriculum. Adaptive test generation targets specific failure modes.*
+
+Keep Tier 0–3 as immutable floors (these define what "viable" means). Add **Tier X** (adaptive):
+
+After each failed campaign, extract the failure mode from the viability report. Use an LLM to generate 3–5 targeted test cases probing that specific failure. Add them to the next campaign's evaluation.
+
+Inspired by Absolute Zero Reasoner (NeurIPS 2025 Spotlight, arXiv 2505.03335), which generates its own training tasks via self-play and achieves SOTA without human-curated examples. The insight: the same model that generates code can generate adversarial tests.
+
+**Constraints**:
+- Adaptive tests supplement fixed tiers, never replace them
+- Adaptive tests expire after 5 campaigns (prevent accumulation of stale tests)
+- Total adaptive test count capped at 10 per campaign (prevent test bloat)
+
+**Caution**: Co-evolved tests can drift toward testing irrelevant edge cases. The fixed tiers anchor what "viable" means; adaptive tests explore failure surfaces within those tiers.
+
+---
+
+## Self-Referential Fitness Dimensions (New — from adversarial review, file 08 §7)
+
+Three fitness dimensions are self-referential: `test_count`, `test_pass_rate`, `test_coverage`. The organism generates its own test suite. Under selection pressure, a spec will evolve to describe code with trivial tests (`assert True`) that maximize these metrics without testing anything meaningful.
+
+**Mitigations**:
+1. Weight self-referential dimensions lower than Test Rig dimensions in the fitness vector
+2. Add test-quality signals: assertion density (meaningful assertions per test), mutation score (do tests catch injected faults?)
+3. The Red Queen Tier 1 (behavioral contracts from the spec) provides external test obligations that the organism cannot trivially satisfy
 
 ---
 
 ## What This Produces That Nobody Else Has
 
-1. **A legible, versioned evolutionary history**: Every spec mutation is a git diff. You can read the history of how the spec improved. You can bisect to find when a capability was gained or lost.
+1. **Genotype-phenotype indirection**: The spec (genotype) is not the thing that executes — Prime (the constructor) interprets it to produce the codebase (phenotype). Other systems evolve the artifact that IS the output (PromptBreeder evolves prompts used directly; AlphaEvolve evolves code executed directly). Cambrian uniquely evolves the *blueprint* that a constructor reads. This is Von Neumann's Universal Constructor architecture applied to LLM-driven evolution.
 
-2. **Separation of genome and constructor**: Prime doesn't evolve — the spec evolves. Prime is the invariant universal constructor. This is structurally safe in a way no existing self-modifying system is.
+2. **Recursive self-reproduction as fitness**: The offspring must read its own spec and reproduce. This recursive viability test is absent from prompt optimization, code evolution, and all systems surveyed in files 01–07. It tests not just output quality but whether the output can itself be a constructor.
 
-3. **External ground truth**: The Test Rig is immutable and runs in an isolated environment. No amount of spec evolution can corrupt the evaluation mechanism. Darwin Godel Machine's fatal flaw is impossible in this architecture.
+3. **A legible, versioned evolutionary history**: Every spec mutation is a git diff. You can read the history of how the spec improved. You can bisect to find when a capability was gained or lost. (Shared with A-Evolve's git-tagged mutations — file 07.)
 
-4. **Formal behavioral niches**: MAP-Elites maintains the spec that optimizes each fitness dimension. When you need the fastest-code spec, it's in the archive. When you need the most-correct-code spec, it's there too. You don't optimize for one thing and lose another.
+4. **External ground truth with hardened isolation**: The Test Rig is immutable and runs in an isolated environment. The organism executes in a separate process namespace with no access to Test Rig code. No amount of spec evolution can corrupt the evaluation mechanism. (See §Container Isolation for the specific hardening requirements.)
 
-5. **Constitutional axioms**: The frozen invariant section means evolution can't undermine the mechanisms that make evolution safe. Self-improvement is bounded by axioms that don't evolve.
+5. **Constitutional axioms**: The frozen invariant section means evolution can't undermine the mechanisms that make evolution safe. Self-improvement is bounded by axioms that don't evolve. (But see file 08 §6 for indirect circumvention risks.)
 
-6. **Growing tests**: Red Queen dynamics mean the system gets harder to satisfy over time. Overfitting is impossible when the fit target moves.
+6. **Growing tests + adaptive targeting**: Red Queen tiers mean the system gets harder to satisfy over time. Adaptive test generation (Tier X) targets specific recurring failure modes. Fixed tiers prevent overfitting; adaptive tests prevent plateaus.
 
 ---
 
 ## What to Build First (M2 Stage 1)
 
-Before all of this, M1 must work. The five implementation BLOCKERs (cambrian-23g, cambrian-ddw, cambrian-uua, cambrian-l4j, cambrian-0id) must be fixed. Gen-1 must produce Gen-2. Gen-2 must produce Gen-3 (echo server).
+*Revised after adversarial review. Simplified: no MAP-Elites, no dual-model screener, no neutral drift. Start with what works at small scale.*
+
+Before all of this, M1 must work. Gen-1 must produce Gen-2. Gen-2 must produce Gen-3 (echo server).
 
 When M1 is solid, M2 Stage 1 is:
 
-1. **Campaign runner**: Wrap the generation loop to run N generations against one spec and produce a campaign summary. This is pure infrastructure — no mutation yet.
+1. **Container isolation hardening**: Before any evolution, ensure the organism cannot influence the Test Rig via filesystem. Separate process namespace, `/test-rig/` not mounted in organism space, non-root user, viability report written only by Test Rig. This is a precondition for safe evolution.
 
-2. **Fitness vector computation**: Extend the Test Rig to output the full 15-dimension fitness vector, not just viability boolean. This requires implementing the metrics that are currently informational-only.
+2. **Campaign runner**: Wrap the generation loop to run N generations against one spec and produce a campaign summary. This is pure infrastructure — no mutation yet.
 
-3. **Spec diff tooling**: Infrastructure to produce readable diffs between spec versions, and to apply/revert diffs. The mutation operators need this.
+3. **Fitness vector computation**: Extend the Test Rig to output the full 15-dimension fitness vector, not just viability boolean. Discount self-referential dimensions (`test_count`, `test_pass_rate`, `test_coverage`) relative to external dimensions.
 
-4. **MAP-Elites archive**: A simple data structure (initially a JSON file) storing one spec variant per niche, indexed by the 4 behavioral dimensions.
+4. **Spec diff tooling + section attribution**: Infrastructure to produce readable diffs between spec versions, and to attribute fitness changes to specific sections. The mutation operators need this; section attribution detects linkage drag early.
 
-5. **Type 1 mutations only**: Start with refinement mutations. Give the Spec Mutator failure modes from a campaign and ask for targeted fixes. Measure whether the next campaign performs better.
+5. **Single-objective BO loop**: Bayesian optimization over spec mutations, maximizing viability rate. No archive, no behavioral dimensions — just one GP surrogate predicting which mutation most likely improves viability. This replaces the MAP-Elites archive for Stage 1.
+
+6. **Type 1 mutations with lightweight grammar constraints**: Refinement mutations that preserve the spec's heading hierarchy and required sections. Free-form LLM mutation within grammar constraints — structurally valid by construction, not by screening. Deterministic `grep` check for frozen invariant integrity.
+
+7. **Mini-campaign screening**: Each mutation gets a 2-generation mini-campaign. If neither generation passes Tier 0, reject. If one does, run a full 5-generation campaign. The Test Rig is the judge.
 
 Measure: does the Type 1 mutated spec produce a campaign with higher viability rate than the original? If yes, M2 has demonstrated value. If no, stop and investigate before adding complexity.
 
@@ -248,8 +342,10 @@ Measure: does the Type 1 mutated spec produce a campaign with higher viability r
 
 **Success criterion**: The evolved spec's campaign viability rate (averaged across 5 campaigns) exceeds the baseline spec's campaign viability rate by >20%.
 
-**If it works**: Add Type 2 mutations (section transplant) and the MAP-Elites archive. Measure diversity.
+**Secondary measurement — evolution-scaling**: Plot viability rate vs. campaign number. Is the improvement curve linear, logarithmic, or asymptotic? The A-Evolve paper's evolution-scaling hypothesis (arXiv 2602.00359) predicts improvement scales with evolution compute. Our experiment can confirm or bound this for spec evolution.
+
+**If it works**: Add Type 2 mutations (section transplant) and upgrade from BO to BOP-Elites. Measure diversity. Monitor entanglement.
 
 **If it doesn't**: The Spec Mutator prompts are wrong, the failure mode extraction is insufficient, or the fundamental hypothesis is wrong. Investigate with bisection — run mutation on a known-fixable failure, manually verify the mutation addresses it, then test whether the campaign actually improves.
 
-The research exists. The architecture is sound. The question is empirical.
+The research exists. The architecture has been adversarially reviewed and hardened. The question is empirical.
