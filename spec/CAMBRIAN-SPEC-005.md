@@ -414,6 +414,7 @@ Maximum parse retries: `CAMBRIAN_MAX_PARSE_RETRIES` (default 2). A successful pa
 - HTTP server: `aiohttp`
 - HTTP client for Supervisor API calls: `aiohttp.ClientSession`
 - LLM API client: `anthropic` Python SDK in async mode (`anthropic.AsyncAnthropic()`). The SDK handles authentication, retries, rate limiting, and streaming — do not reimplement these with raw `aiohttp`.
+- **`call_llm()` MUST use streaming.** Use `async with client.messages.stream(...) as stream: message = await stream.get_final_message()`. Do NOT use `client.messages.create()` — the SDK raises an error for large `max_tokens` values with non-streaming calls. This applies regardless of `max_tokens` value.
 - Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
 - Type annotations: full coverage, Pyright strict compatible
 - Validation: Pydantic v2 for all I/O boundary data (manifest, viability report, API responses)
@@ -479,6 +480,33 @@ The test suite MUST cover:
 - Model escalates to `CAMBRIAN_ESCALATION_MODEL` on `retry_count >= 1`
 
 Tests MUST be runnable with `python -m pytest tests/ -v`.
+
+#### aiohttp test pattern
+
+Use the `aiohttp_client` pytest fixture — do NOT use `AioHTTPTestCase` or `@unittest_run_loop`. Both are deprecated in aiohttp 3.8+ and break in 3.10+.
+
+Correct pattern:
+```python
+# conftest.py or top of test file — configure pytest-asyncio
+# pytest.ini or pyproject.toml: asyncio_mode = "auto"
+
+async def test_health(aiohttp_client):
+    from src.prime import make_app
+    client = await aiohttp_client(make_app())
+    resp = await client.get("/health")
+    assert resp.status == 200
+```
+
+For a mock Supervisor server, use `aiohttp_server`:
+```python
+async def test_spawn(aiohttp_server):
+    app = web.Application()
+    app.router.add_post("/spawn", my_handler)
+    server = await aiohttp_server(app)
+    # use server.make_url("/spawn")
+```
+
+`pytest-asyncio` in AUTO mode (`asyncio_mode = "auto"` in `pytest.ini`) means `async def test_*` functions run automatically without `@pytest.mark.asyncio`.
 
 ## Configuration
 
