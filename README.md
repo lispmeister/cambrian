@@ -8,14 +8,13 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 ## Status
 
-**Stage 2 ready — Gen-1 promoted, awaiting autonomous reproduction.**
+**M1 complete — Gen-1 produced 5 viable offspring autonomously.**
 
 What's done:
 - Phase 0: Supervisor, Test Rig, Docker image, gen-0 validated end-to-end
-- Stage 1: Gen-1 Prime written (human + Claude Code), passes Test Rig (34 tests, all green)
-- Code review: 12 issues found and fixed across spec, infrastructure, and Gen-1
+- M1: Gen-1 ran 44 minutes, 10 total generations, 5 promoted (gen-4, gen-6, gen-8, gen-9, gen-10), all at 100% test pass rate. 474,834 cumulative tokens.
 
-Next: start Gen-1 in a container, it autonomously produces Gen-2 via LLM (Sonnet). Then Gen-2 produces Gen-3. Gen-3 passing the Test Rig = M1 complete.
+Next: M2 — spec mutation, fitness vectors, population campaigns. See `research/06-proposal.md`.
 
 ## The Idea
 
@@ -53,7 +52,7 @@ Three components:
 
 ## Milestones
 
-- **M1: Reproduce.** Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. Gen-3 passing = M1 complete.
+- **M1: Reproduce.** ✓ Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. Completed 2026-03-29: 5 viable offspring, 474k tokens.
 - **M2: Self-modify.** Prime mutates its own spec and tests whether the mutation produces fitter offspring.
 
 ## Tech Stack
@@ -85,29 +84,98 @@ lab-journal/               — Discussion and decision logs
 ## Quick Start
 
 ```bash
-# Clone both repos
+# Clone both repos side by side
 git clone https://github.com/lispmeister/cambrian.git
 git clone https://github.com/lispmeister/cambrian-artifacts.git
 
-# Build Docker image
+# Create .env with your API key
+echo "ANTHROPIC_API_KEY=sk-ant-..." > cambrian/.env
+
+# Build Docker base image
 cd cambrian
 ./docker/build.sh
 
-# Start Supervisor
-uv run python -m supervisor
+# Start Supervisor (terminal 1)
+source .env
+uv run python -m supervisor.supervisor
 
-# Start Gen-1 (in another terminal)
+# Run Gen-1 (terminal 2) — mounts the artifacts ROOT, not the gen-1 subdir
+source .env
 docker run --rm \
+  -v "$(pwd)/../cambrian-artifacts:/workspace:rw" \
+  --workdir /workspace/gen-1 \
+  --entrypoint /bin/bash \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  -e CAMBRIAN_SUPERVISOR_URL="http://host.docker.internal:8400" \
+  -e CAMBRIAN_SUPERVISOR_URL="http://host.docker.internal:host-gateway" \
   -e CAMBRIAN_GENERATION=1 \
-  -e CAMBRIAN_MODEL="claude-sonnet-4-6" \
-  -v "$(pwd)/../cambrian-artifacts/gen-1:/workspace" \
-  --add-host host.docker.internal:host-gateway \
-  cambrian-base
+  -e CAMBRIAN_WORKSPACE=/workspace \
+  -e CAMBRIAN_ESCALATION_MODEL=claude-sonnet-4-6 \
+  cambrian-base:latest \
+  -c "pip install -r requirements.txt -q && python -m src.prime"
 ```
 
+> **Mount note:** The volume must be the artifacts root (`cambrian-artifacts/`), not `gen-1/`. Prime writes offspring into sibling directories (`gen-2/`, `gen-3/`, ...) and the Supervisor reads them from there.
+
 See [CLAUDE.md](CLAUDE.md) for development conventions and issue tracking workflow.
+
+---
+
+## Running a Generation Loop with Claude Code
+
+The Supervisor and Docker command above can be orchestrated by Claude Code. Two prompts follow — paste the first into a new session to orient Claude, then use the second to kick off a run.
+
+### Prompt 1 — Project context
+
+Paste this at the start of a new Claude Code session in the `cambrian/` directory:
+
+```
+We're working on the Cambrian project — a self-reproducing code factory.
+
+Key concepts:
+- Prime is the organism: it reads a spec (CAMBRIAN-SPEC-005.md), calls an LLM, and generates a complete working codebase each generation.
+- The Supervisor (supervisor/supervisor.py) is host infrastructure: it manages Docker containers, tracks generation history at ../cambrian-artifacts/generations.json, and handles promote/rollback via HTTP API at port 8400.
+- The Test Rig is a mechanical verifier: it builds the artifact, runs tests, starts the process, and checks health contracts. No LLM involved.
+- cambrian-artifacts/ (sibling repo) holds the generated artifacts: gen-1/, gen-2/, etc., plus generations.json.
+
+Repos:
+- cambrian/ — specs, Supervisor, Test Rig, Docker
+- cambrian-artifacts/ — generated artifacts, generation history
+
+Environment:
+- ANTHROPIC_API_KEY is in .env — load with: source .env
+- Never use pip install directly; use uv
+- Supervisor starts with: uv run python -m supervisor.supervisor
+- The Docker base image is cambrian-base:latest (build with ./docker/build.sh if missing)
+- Use claude-sonnet-4-6 as the default model (budget-conscious); only use claude-opus-4-6 if asked
+- Check bd ready for available work before starting anything new
+```
+
+### Prompt 2 — Start a generation run
+
+Once Claude has context, use this to kick off a run:
+
+```
+Start a generation run from Gen-1.
+
+1. Check that the Supervisor is running (curl http://localhost:8400/health). If not, start it: source .env && uv run python -m supervisor.supervisor &
+2. Check that cambrian-base:latest exists (docker images cambrian-base). If not, build it: ./docker/build.sh
+3. Run Gen-1 in a container:
+
+source .env && docker run --rm \
+  -v "$(realpath ../cambrian-artifacts):/workspace:rw" \
+  --workdir /workspace/gen-1 \
+  --entrypoint /bin/bash \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e CAMBRIAN_SUPERVISOR_URL=http://host.docker.internal:8400 \
+  -e CAMBRIAN_GENERATION=1 \
+  -e CAMBRIAN_WORKSPACE=/workspace \
+  -e CAMBRIAN_ESCALATION_MODEL=claude-sonnet-4-6 \
+  cambrian-base:latest \
+  -c "pip install -r requirements.txt -q && python -m src.prime"
+
+4. Stream the container logs and report each generation outcome (promoted/failed, test count, tokens).
+5. When the loop ends, summarize: total generations, promoted count, cumulative tokens, and update cambrian-iy3 (or create a new bead if iy3 is already closed).
+```
 
 ## License
 
