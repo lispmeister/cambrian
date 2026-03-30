@@ -679,11 +679,10 @@ def _count_lines(file_paths: list[str]) -> int:
         if not path.exists():
             continue
         try:
-            # Check for binary content in first 8KB
-            chunk = path.read_bytes()[:8192]
-            if b"\x00" in chunk:
+            raw = path.read_bytes()
+            if b"\x00" in raw[:8192]:  # binary file detection
                 continue
-            total += path.read_text(errors="replace").count("\n")
+            total += raw.decode(errors="replace").count("\n")
         except OSError:
             continue
     return total

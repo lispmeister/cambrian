@@ -702,3 +702,187 @@ class TestWaitForTcp:
 
         assert result["passed"] is False
         assert result.get("exit_code") == 1
+
+
+# ---------------------------------------------------------------------------
+# run_build tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunBuild:
+    def test_empty_build_command_passes(self, workspace: Path) -> None:
+        import test_rig
+
+        result = test_rig.run_build({"build": ""})
+        assert result["passed"] is True
+        assert result["duration_ms"] == 0
+
+    def test_successful_build(self, workspace: Path) -> None:
+        import test_rig
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("subprocess.run", return_value=mock_result):
+            result = test_rig.run_build({"build": "pip install -r requirements.txt"})
+        assert result["passed"] is True
+        assert "duration_ms" in result
+
+    def test_failed_build(self, workspace: Path) -> None:
+        import test_rig
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = "some output"
+        mock_result.stderr = "error message"
+        with patch("subprocess.run", return_value=mock_result):
+            result = test_rig.run_build({"build": "pip install missing-pkg"})
+        assert result["passed"] is False
+        assert result["exit_code"] == 1
+        assert "error message" in result["stderr_tail"]
+
+    def test_build_timeout(self, workspace: Path) -> None:
+        import subprocess
+
+        import test_rig
+
+        exc = subprocess.TimeoutExpired("pip install", 300)
+        exc.stdout = b"partial output"
+        exc.stderr = b"partial error"
+        with patch("subprocess.run", side_effect=exc):
+            result = test_rig.run_build({"build": "pip install slow-pkg"})
+        assert result["passed"] is False
+        assert result["exit_code"] is None
+        assert result["timed_out"] is True
+
+
+# ---------------------------------------------------------------------------
+# run_tests tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunTests:
+    def test_empty_test_command_passes(self, workspace: Path) -> None:
+        import test_rig
+
+        result = test_rig.run_tests({"test": ""})
+        assert result["passed"] is True
+        assert result["tests_run"] == 0
+        assert result["tests_passed"] == 0
+
+    def test_successful_tests(self, workspace: Path) -> None:
+        import test_rig
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "5 passed in 1.2s"
+        mock_result.stderr = ""
+        with patch("subprocess.run", return_value=mock_result):
+            result = test_rig.run_tests({"test": "pytest tests/"})
+        assert result["passed"] is True
+        assert result["tests_run"] == 5
+        assert result["tests_passed"] == 5
+
+    def test_failed_tests_with_failures_parsed(self, workspace: Path) -> None:
+        import test_rig
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = (
+            "FAILED tests/test_api.py::test_spawn - AssertionError: x\n3 failed in 0.5s"
+        )
+        mock_result.stderr = ""
+        with patch("subprocess.run", return_value=mock_result):
+            result = test_rig.run_tests({"test": "pytest tests/"})
+        assert result["passed"] is False
+        assert result["tests_run"] == 3
+        assert result["tests_passed"] == 0
+        assert len(result["failures"]) == 1
+
+    def test_test_timeout(self, workspace: Path) -> None:
+        import subprocess
+
+        import test_rig
+
+        exc = subprocess.TimeoutExpired("pytest", 120)
+        exc.stdout = b""
+        exc.stderr = b"timeout"
+        with patch("subprocess.run", side_effect=exc):
+            result = test_rig.run_tests({"test": "pytest tests/"})
+        assert result["passed"] is False
+        assert result["timed_out"] is True
+        assert result["tests_run"] == -1
+        assert result["tests_passed"] == -1
+
+
+# ---------------------------------------------------------------------------
+# start_process tests
+# ---------------------------------------------------------------------------
+
+
+class TestStartProcess:
+    def test_start_returns_popen_and_result(self, workspace: Path) -> None:
+        import subprocess
+
+        import test_rig
+
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        with patch("subprocess.Popen", return_value=mock_proc):
+            proc, result = test_rig.start_process({"start": "python src/server.py"})
+        assert proc is mock_proc
+        assert result["passed"] is True
+        assert "duration_ms" in result
+
+
+# ---------------------------------------------------------------------------
+# _run_fallback_health tests
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackHealth:
+    def _mock_http_response(self, status: int, body: bytes = b'{"generation": 1}') -> Any:
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = body
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_health_and_stats_pass(self, workspace: Path) -> None:
+        import time
+
+        import test_rig
+
+        ok_resp = self._mock_http_response(200)
+        with patch("urllib.request.urlopen", return_value=ok_resp):
+            result = test_rig._run_fallback_health("http://localhost:8401/health", time.monotonic())
+        assert result["passed"] is True
+
+    def test_health_fails(self, workspace: Path) -> None:
+        import time
+        import urllib.error
+
+        import test_rig
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+            result = test_rig._run_fallback_health("http://localhost:8401/health", time.monotonic())
+        assert result["passed"] is False
+        assert "error" in result
+
+    def test_stats_missing_generation_field(self, workspace: Path) -> None:
+        import time
+
+        import test_rig
+
+        call_count = 0
+
+        def side_effect(url: str, timeout: int) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return self._mock_http_response(200)  # health passes
+            return self._mock_http_response(200, b'{"status": "idle"}')  # stats missing generation
+
+        with patch("urllib.request.urlopen", side_effect=side_effect):
+            result = test_rig._run_fallback_health("http://localhost:8401/health", time.monotonic())
+        assert result["passed"] is False
+        assert "generation" in result["error"]

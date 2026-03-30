@@ -1,0 +1,14 @@
+services:
+  supervisor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8400:8400"
+    environment:
+      - ANTHROPIC_API_KEY
+      - CAMBRIAN_ARTIFACTS_ROOT=/artifacts
+      - CAMBRIAN_SUPERVISOR_URL=http://supervisor:8400
+    volumes:
+      - ./cambrian-artifacts:/artifacts
+    command: python -m supervisor.supervisor

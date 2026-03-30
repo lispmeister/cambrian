@@ -1,0 +1,31 @@
+# Version control
+.git
+.gitignore
+
+# Python build artifacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Virtual environments
+.venv
+
+# Development tooling and tracking
+.beads
+.claude
+
+# Documentation and research (not needed in container)
+lab-journal
+research
+spec/archive
+docs
+
+# Dev configs
+pyrightconfig.json
+skills-lock.json
+
+# Sensitive
+.env

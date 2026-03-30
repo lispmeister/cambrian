@@ -1,9 +1,10 @@
 """Unit tests for Supervisor HTTP endpoints and generation record store."""
 
+import json
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -388,3 +389,157 @@ async def test_spawn_includes_campaign_id(
     rec = generations.get(1)
     assert rec is not None
     assert rec.get("campaign-id") == "campaign-abc12345"
+
+
+# ---------------------------------------------------------------------------
+# run_test_rig tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_docker() -> tuple[Any, Any]:
+    """Return (mock_docker_cls, mock_docker) with a pre-configured container mock."""
+    mock_docker_cls = MagicMock()
+    mock_docker = AsyncMock()
+    mock_container = AsyncMock()
+    mock_docker.containers.create_or_replace = AsyncMock(return_value=mock_container)
+    mock_container.start = AsyncMock()
+    mock_container.wait = AsyncMock(return_value={"StatusCode": 0})
+    mock_container.kill = AsyncMock()
+    mock_container.delete = AsyncMock()
+    mock_docker.close = AsyncMock()
+    mock_docker_cls.return_value = mock_docker
+    return mock_docker_cls, mock_docker
+
+
+@pytest.mark.asyncio
+async def test_run_test_rig_happy_path(artifacts_root: Path) -> None:
+    """Container exits normally with a viable report — record updated to tested."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 1, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-1"
+    artifact_path.mkdir()
+
+    # Write a viable viability report into the artifact dir
+    viability = {
+        "generation": 1,
+        "status": "viable",
+        "failure_stage": "none",
+        "checks": {
+            "manifest": {"passed": True},
+            "build": {"passed": True, "duration_ms": 100},
+            "test": {"passed": True, "tests_run": 5, "tests_passed": 5, "duration_ms": 200},
+            "start": {"passed": True, "duration_ms": 50},
+            "health": {"passed": True, "duration_ms": 10},
+        },
+        "completed_at": "2026-03-30T00:00:00Z",
+    }
+    (artifact_path / "viability-report.json").write_text(json.dumps(viability))
+
+    mock_docker_cls, _ = _make_mock_docker()
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(1, artifact_path, "lab-gen-1")
+
+    rec = generations.get(1)
+    assert rec is not None
+    assert rec["outcome"] == "tested"
+    assert rec["viability"]["status"] == "viable"
+    assert sup._status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_run_test_rig_container_timeout(artifacts_root: Path) -> None:
+    """Container times out — record updated to 'timeout', container killed."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 2, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-2"
+    artifact_path.mkdir()
+
+    mock_docker_cls, mock_docker = _make_mock_docker()
+    mock_container = mock_docker.containers.create_or_replace.return_value
+    # Make container.wait() raise TimeoutError to simulate a timeout
+    mock_container.wait = AsyncMock(side_effect=TimeoutError)
+
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(2, artifact_path, "lab-gen-2")
+
+    rec = generations.get(2)
+    assert rec is not None
+    assert rec["outcome"] == "timeout"
+    mock_container.kill.assert_called_once()
+    assert sup._status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_run_test_rig_missing_viability_report(artifacts_root: Path) -> None:
+    """Container exits but writes no viability report — fallback non-viable report generated."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 3, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-3"
+    artifact_path.mkdir()
+    # No viability-report.json written
+
+    mock_docker_cls, _ = _make_mock_docker()
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(3, artifact_path, "lab-gen-3")
+
+    rec = generations.get(3)
+    assert rec is not None
+    assert rec["outcome"] == "tested"
+    assert rec["viability"]["status"] == "non-viable"
+    assert "crashed or exited" in rec["viability"]["diagnostics"]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_run_test_rig_docker_error(artifacts_root: Path) -> None:
+    """Container creation fails — record updated with infrastructure error viability."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 4, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-4"
+    artifact_path.mkdir()
+
+    mock_docker_cls = MagicMock()
+    mock_docker = AsyncMock()
+    mock_docker.containers.create_or_replace = AsyncMock(side_effect=Exception("docker boom"))
+    mock_docker.close = AsyncMock()
+    mock_docker_cls.return_value = mock_docker
+
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(4, artifact_path, "lab-gen-4")
+
+    rec = generations.get(4)
+    assert rec is not None
+    assert rec["outcome"] == "tested"
+    assert "infrastructure error" in rec["viability"]["diagnostics"]["summary"]
+    assert "docker boom" in rec["viability"]["diagnostics"]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_run_test_rig_cleans_up_cache_dirs(artifacts_root: Path) -> None:
+    """Cache dirs created by the container are cleaned up after run."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 5, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-5"
+    artifact_path.mkdir()
+
+    # Simulate cache dirs that the container would have left behind
+    pycache = artifact_path / "src" / "__pycache__"
+    pycache.mkdir(parents=True)
+    pytest_cache = artifact_path / ".pytest_cache"
+    pytest_cache.mkdir()
+
+    mock_docker_cls, _ = _make_mock_docker()
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(5, artifact_path, "lab-gen-5")
+
+    assert not pycache.exists(), "__pycache__ should be removed"
+    assert not pytest_cache.exists(), ".pytest_cache should be removed"
