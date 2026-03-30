@@ -1,4 +1,5 @@
 """Cambrian Supervisor — host-side HTTP server managing containers and generation history."""
+
 import asyncio
 import contextlib
 import json
@@ -24,9 +25,7 @@ log = structlog.get_logger(component="supervisor")
 
 PORT = int(os.environ.get("CAMBRIAN_SUPERVISOR_PORT", "8400"))
 DOCKER_IMAGE = os.environ.get("CAMBRIAN_DOCKER_IMAGE", "cambrian-base")
-SUPERVISOR_URL = os.environ.get(
-    "CAMBRIAN_SUPERVISOR_URL", "http://host.docker.internal:8400"
-)
+SUPERVISOR_URL = os.environ.get("CAMBRIAN_SUPERVISOR_URL", "http://host.docker.internal:8400")
 CONTAINER_TIMEOUT = int(os.environ.get("CAMBRIAN_CONTAINER_TIMEOUT", "600"))
 
 _start_time: float = 0.0
@@ -54,11 +53,12 @@ def _set_status(status: str, generation: int | None = None) -> None:
 # Handlers
 # ---------------------------------------------------------------------------
 
+
 async def handle_root(request: web.Request) -> web.Response:
     records = generations.load_all()
     rows = "".join(
-        f"<tr><td>{r.get('generation')}</td><td>{r.get('outcome','in_progress')}</td>"
-        f"<td>{r.get('created','')}</td></tr>"
+        f"<tr><td>{r.get('generation')}</td><td>{r.get('outcome', 'in_progress')}</td>"
+        f"<td>{r.get('created', '')}</td></tr>"
         for r in records
     )
     html = (
@@ -79,11 +79,13 @@ async def handle_stats(request: web.Request) -> web.Response:
     latest = records[-1] if records else None
     latest_gen = int(latest.get("generation", 0)) if latest else 0
     uptime = int(time.time() - _start_time)
-    return web.json_response({
-        "generation": latest_gen,
-        "status": _status,
-        "uptime": uptime,
-    })
+    return web.json_response(
+        {
+            "generation": latest_gen,
+            "status": _status,
+            "uptime": uptime,
+        }
+    )
 
 
 async def handle_versions(request: web.Request) -> web.Response:
@@ -92,18 +94,20 @@ async def handle_versions(request: web.Request) -> web.Response:
 
 async def handle_debug_state(request: web.Request) -> web.Response:
     """Dump internal Supervisor state as JSON — for development debugging only."""
-    return web.json_response({
-        "status": _status,
-        "current_generation": _current_generation,
-        "uptime": int(time.time() - _start_time),
-        "records": generations.load_all(),
-        "config": {
-            "port": PORT,
-            "docker_image": DOCKER_IMAGE,
-            "container_timeout": CONTAINER_TIMEOUT,
-            "artifacts_root": git_ops.artifacts_root(),
-        },
-    })
+    return web.json_response(
+        {
+            "status": _status,
+            "current_generation": _current_generation,
+            "uptime": int(time.time() - _start_time),
+            "records": generations.load_all(),
+            "config": {
+                "port": PORT,
+                "docker_image": DOCKER_IMAGE,
+                "container_timeout": CONTAINER_TIMEOUT,
+                "artifacts_root": git_ops.artifacts_root(),
+            },
+        }
+    )
 
 
 async def handle_spawn(request: web.Request) -> web.Response:
@@ -112,7 +116,14 @@ async def handle_spawn(request: web.Request) -> web.Response:
     artifact_rel = body["artifact-path"]  # relative path inside artifacts repo
 
     artifacts_root = git_ops.artifacts_root()
-    artifact_path = Path(artifacts_root) / artifact_rel
+    artifact_path = (Path(artifacts_root) / artifact_rel).resolve()
+
+    # Path traversal guard — reject paths that escape the artifacts root
+    if not str(artifact_path).startswith(str(Path(artifacts_root).resolve())):
+        return web.json_response(
+            {"ok": False, "error": "artifact-path escapes artifacts root"},
+            status=400,
+        )
 
     if not artifact_path.exists():
         return web.json_response(
@@ -128,17 +139,12 @@ async def handle_spawn(request: web.Request) -> web.Response:
     try:
         images = await docker.images.list()
         image_tag = DOCKER_IMAGE if ":" in DOCKER_IMAGE else f"{DOCKER_IMAGE}:latest"
-        found = any(
-            image_tag in (img.get("RepoTags") or [])
-            for img in images
-        )
+        found = any(image_tag in (img.get("RepoTags") or []) for img in images)
         if not found:
             await docker.close()
             _set_status("idle")
-            return web.json_response(
-                {"ok": False, "error": f"Docker image {DOCKER_IMAGE} not found. Run docker/build.sh"},
-                status=400,
-            )
+            err = f"Docker image {DOCKER_IMAGE!r} not found. Run docker/build.sh"
+            return web.json_response({"ok": False, "error": err}, status=400)
     except Exception as e:
         await docker.close()
         _set_status("idle")
@@ -156,8 +162,10 @@ async def handle_spawn(request: web.Request) -> web.Response:
         await git_ops.git("checkout", "-b", f"gen-{generation}")
         await git_ops.git("add", "-A")
         await git_ops.git(
-            "commit", "--allow-empty",
-            "-m", f"Generation {generation} artifact",
+            "commit",
+            "--allow-empty",
+            "-m",
+            f"Generation {generation} artifact",
         )
     except git_ops.GitError as e:
         _set_status("idle")
@@ -173,7 +181,7 @@ async def handle_spawn(request: web.Request) -> web.Response:
         "spec-hash": body.get("spec-hash", ""),
         "artifact-hash": "",
         "outcome": "in_progress",
-        "artifact_ref": f"gen-{generation}",
+        "artifact-ref": f"gen-{generation}",
         "created": datetime.now(UTC).isoformat(),
         "completed": None,
         "container-id": container_id,
@@ -205,7 +213,7 @@ async def handle_promote(request: web.Request) -> web.Response:
             {"ok": False, "error": f"Generation {generation} not found"}, status=404
         )
 
-    artifact_rel = record.get("artifact_ref", f"gen-{generation}")
+    artifact_rel = record.get("artifact-ref", f"gen-{generation}")
     artifact_path = Path(git_ops.artifacts_root()) / artifact_rel
 
     try:
@@ -214,7 +222,7 @@ async def handle_promote(request: web.Request) -> web.Response:
         _set_status("idle")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
-    generations.update(generation, outcome="promoted", artifact_ref=tag)
+    generations.update(generation, {"outcome": "promoted", "artifact-ref": tag})
     _set_status("idle")
     log.info("generation_promoted", generation=generation, tag=tag)
     return web.json_response({"ok": True, "generation": generation})
@@ -231,7 +239,7 @@ async def handle_rollback(request: web.Request) -> web.Response:
         _set_status("idle")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
-    generations.update(generation, outcome="failed", artifact_ref=tag)
+    generations.update(generation, {"outcome": "failed", "artifact-ref": tag})
     _set_status("idle")
     log.info("generation_rolled_back", generation=generation, tag=tag)
     return web.json_response({"ok": True, "generation": generation})
@@ -240,6 +248,32 @@ async def handle_rollback(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Test Rig background task
 # ---------------------------------------------------------------------------
+
+
+def _make_error_viability(generation: int, summary: str) -> dict[str, Any]:
+    """Return a non-viable viability report for infrastructure failures."""
+    return {
+        "generation": generation,
+        "status": "non-viable",
+        "failure_stage": "health",
+        "checks": {
+            "manifest": {"passed": False},
+            "build": {"passed": False, "duration_ms": 0},
+            "test": {"passed": False, "duration_ms": 0, "tests_run": 0, "tests_passed": 0},
+            "start": {"passed": False, "duration_ms": 0},
+            "health": {"passed": False, "duration_ms": 0},
+        },
+        "completed_at": datetime.now(UTC).isoformat(),
+        "diagnostics": {
+            "stage": "health",
+            "summary": summary,
+            "exit_code": None,
+            "failures": [],
+            "stdout_tail": "",
+            "stderr_tail": "",
+        },
+    }
+
 
 async def run_test_rig(generation: int, artifact_path: Path, container_id: str) -> None:
     """Run the Test Rig container and update the generation record with results.
@@ -279,9 +313,7 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
                 "Binds": [f"{artifact_path.resolve()}:/workspace:rw"],
             },
         }
-        container = await docker.containers.create_or_replace(
-            name=container_id, config=config
-        )
+        container = await docker.containers.create_or_replace(name=container_id, config=config)
         await container.start()
         _set_status("testing", generation)
         log.info("test_rig_started", generation=generation, container_id=container_id)
@@ -293,7 +325,7 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             log.warning("container_timeout", generation=generation, timeout=CONTAINER_TIMEOUT)
             with contextlib.suppress(Exception):
                 await container.kill()
-            generations.update(generation, outcome="timeout")
+            generations.update(generation, {"outcome": "timeout"})
             _set_status("idle")
             return
 
@@ -303,60 +335,28 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             with report_path.open() as f:
                 viability = json.load(f)
         else:
-            viability = {
-                "generation": generation,
-                "status": "non-viable",
-                "failure_stage": "health",
-                "checks": {
-                    "manifest": {"passed": False},
-                    "build": {"passed": False, "duration_ms": 0},
-                    "test": {"passed": False, "duration_ms": 0},
-                    "start": {"passed": False, "duration_ms": 0},
-                    "health": {"passed": False, "duration_ms": 0},
-                },
-                "completed_at": datetime.now(UTC).isoformat(),
-                "diagnostics": {
-                    "stage": "health",
-                    "summary": (
-                        "Viability report not written — "
-                        "container crashed or exited without reporting"
-                    ),
-                    "exit_code": None,
-                    "failures": [],
-                    "stdout_tail": "",
-                    "stderr_tail": "",
-                },
-            }
+            viability = _make_error_viability(
+                generation,
+                "Viability report not written — container crashed or exited without reporting",
+            )
             log.warning("viability_report_missing", generation=generation)
 
         # Set outcome to "tested" — Prime will call /promote or /rollback
-        generations.update(generation, outcome="tested", viability=viability)
+        generations.update(generation, {"outcome": "tested", "viability": viability})
         viable = viability.get("status") == "viable"
         log.info("test_rig_complete", generation=generation, viable=viable)
 
     except Exception as e:
         log.error("test_rig_error", generation=generation, error=str(e))
-        generations.update(generation, outcome="tested", viability={
-            "generation": generation,
-            "status": "non-viable",
-            "failure_stage": "health",
-            "checks": {
-                "manifest": {"passed": False},
-                "build": {"passed": False, "duration_ms": 0},
-                "test": {"passed": False, "duration_ms": 0},
-                "start": {"passed": False, "duration_ms": 0},
-                "health": {"passed": False, "duration_ms": 0},
+        generations.update(
+            generation,
+            {
+                "outcome": "tested",
+                "viability": _make_error_viability(
+                    generation, f"Test rig infrastructure error: {e}"
+                ),
             },
-            "completed_at": datetime.now(UTC).isoformat(),
-            "diagnostics": {
-                "stage": "health",
-                "summary": f"Test rig infrastructure error: {e}",
-                "exit_code": None,
-                "failures": [],
-                "stdout_tail": "",
-                "stderr_tail": "",
-            },
-        })
+        )
     finally:
         if container is not None:
             with contextlib.suppress(Exception):
@@ -365,7 +365,8 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
         # Remove __pycache__ and .pytest_cache left by the container in the bind-mounted
         # workspace. The Dockerfile sets PYTHONDONTWRITEBYTECODE=1 as the primary guard;
         # this is a safety net for any subprocesses that bypass that env var.
-        for cache_dir in (*artifact_path.rglob("__pycache__"), *artifact_path.rglob(".pytest_cache")):
+        cache_dirs = (*artifact_path.rglob("__pycache__"), *artifact_path.rglob(".pytest_cache"))
+        for cache_dir in cache_dirs:
             shutil.rmtree(cache_dir, ignore_errors=True)
         _set_status("idle")
 
@@ -373,6 +374,7 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
 # ---------------------------------------------------------------------------
 # App factory + startup validation
 # ---------------------------------------------------------------------------
+
 
 def make_app() -> web.Application:
     app = web.Application()

@@ -1,4 +1,5 @@
 """Unit tests for Supervisor HTTP endpoints and generation record store."""
+
 import time
 from pathlib import Path
 from typing import Any
@@ -29,19 +30,23 @@ def set_artifacts_root(artifacts_root: Path, monkeypatch: pytest.MonkeyPatch) ->
 # generations.py tests
 # ---------------------------------------------------------------------------
 
+
 class TestGenerations:
     def test_load_all_empty(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         records = generations.load_all()
         assert records == []
 
     def test_load_all_missing_file(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         # File doesn't exist — should return empty list, not raise
         assert generations.load_all() == []
 
     def test_append_and_load(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         record: dict[str, Any] = {
             "generation": 1,
             "outcome": "in_progress",
@@ -53,6 +58,7 @@ class TestGenerations:
 
     def test_get_existing(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "in_progress"})
         generations.append({"generation": 2, "outcome": "in_progress"})
         rec = generations.get(2)
@@ -61,53 +67,71 @@ class TestGenerations:
 
     def test_get_missing(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         assert generations.get(999) is None
 
     def test_update_non_terminal(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "in_progress"})
-        generations.update(1, outcome="tested")
+        generations.update(1, {"outcome": "tested"})
         rec = generations.get(1)
         assert rec is not None
         assert rec["outcome"] == "tested"
 
     def test_update_terminal_is_rejected(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "promoted"})
         # Attempt to change a promoted record — should be silently rejected
-        generations.update(1, outcome="failed")
+        generations.update(1, {"outcome": "failed"})
         rec = generations.get(1)
         assert rec is not None
         assert rec["outcome"] == "promoted"  # unchanged
 
     def test_update_timeout_is_terminal(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "timeout"})
-        generations.update(1, outcome="tested")
+        generations.update(1, {"outcome": "tested"})
         rec = generations.get(1)
         assert rec is not None
         assert rec["outcome"] == "timeout"  # unchanged
 
     def test_update_failed_is_terminal(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "failed"})
-        generations.update(1, outcome="promoted")
+        generations.update(1, {"outcome": "promoted"})
         rec = generations.get(1)
         assert rec is not None
         assert rec["outcome"] == "failed"  # unchanged
 
     def test_update_sets_completed_timestamp(self, artifacts_root: Path) -> None:
         from supervisor import generations
+
         generations.append({"generation": 1, "outcome": "in_progress"})
-        generations.update(1, outcome="tested")
+        generations.update(1, {"outcome": "tested"})
         rec = generations.get(1)
         assert rec is not None
         assert "completed" in rec
+
+    def test_update_nonexistent_generation_is_noop(self, artifacts_root: Path) -> None:
+        from supervisor import generations
+
+        generations.append({"generation": 1, "outcome": "in_progress"})
+        path = artifacts_root / "generations.json"
+        mtime_before = path.stat().st_mtime
+        generations.update(999, {"outcome": "tested"})
+        # File must not be written when no record matches
+        assert path.stat().st_mtime == mtime_before
+        assert generations.get(1) is not None  # existing record untouched
 
 
 # ---------------------------------------------------------------------------
 # supervisor.py HTTP endpoint tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_git_ops(tmp_path: Path) -> Any:
@@ -125,6 +149,7 @@ def mock_git_ops(tmp_path: Path) -> Any:
 @pytest.fixture
 def app(mock_git_ops: Any) -> web.Application:
     import supervisor.supervisor as sup
+
     sup._start_time = time.time()
     sup._status = "idle"
     sup._current_generation = None
@@ -164,6 +189,7 @@ async def test_stats_returns_latest_generation(
     artifacts_root: Path,
 ) -> None:
     from supervisor import generations
+
     generations.append({"generation": 3, "outcome": "promoted"})
     resp = await client.get("/stats")
     data = await resp.json()
@@ -176,6 +202,7 @@ async def test_stats_status_field_is_supervisor_state(
     artifacts_root: Path,
 ) -> None:
     import supervisor.supervisor as sup
+
     sup._status = "idle"
     resp = await client.get("/stats")
     data = await resp.json()
@@ -198,6 +225,7 @@ async def test_versions_returns_all_records(
     artifacts_root: Path,
 ) -> None:
     from supervisor import generations
+
     generations.append({"generation": 1, "outcome": "promoted"})
     generations.append({"generation": 2, "outcome": "in_progress"})
     resp = await client.get("/versions")
@@ -235,18 +263,37 @@ async def test_spawn_missing_artifact_path(
 
 
 @pytest.mark.asyncio
+async def test_spawn_path_traversal_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    resp = await client.post(
+        "/spawn",
+        json={
+            "generation": 1,
+            "artifact-path": "../../etc/passwd",
+            "spec-hash": "sha256:" + "a" * 64,
+        },
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+    assert "escapes" in data["error"]
+
+
+@pytest.mark.asyncio
 async def test_spawn_missing_docker_image(
     client: TestClient,
     artifacts_root: Path,
-    tmp_path: Path,
 ) -> None:
-    # Create a real artifact dir
-    art_dir = tmp_path / "art1"
+    # Create artifact dir inside artifacts_root and use a relative path
+    art_dir = artifacts_root / "art1"
     art_dir.mkdir()
 
     with patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls:
         mock_docker = AsyncMock()
-        mock_docker.images.inspect = AsyncMock(side_effect=Exception("not found"))
+        # Return empty list — image not found
+        mock_docker.images.list = AsyncMock(return_value=[])
         mock_docker.close = AsyncMock()
         mock_docker_cls.return_value = mock_docker
 
@@ -254,14 +301,14 @@ async def test_spawn_missing_docker_image(
             "/spawn",
             json={
                 "generation": 1,
-                "artifact-path": str(art_dir),
+                "artifact-path": "art1",
                 "spec-hash": "sha256:" + "a" * 64,
             },
         )
     assert resp.status == 400
     data = await resp.json()
     assert data["ok"] is False
-    assert "not found" in data["error"].lower() or "Docker image" in data["error"]
+    assert "Docker image" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -279,11 +326,14 @@ async def test_promote_success(
     mock_git_ops: Any,
 ) -> None:
     from supervisor import generations
-    generations.append({
-        "generation": 1,
-        "outcome": "tested",
-        "artifact_ref": "gen-1",
-    })
+
+    generations.append(
+        {
+            "generation": 1,
+            "outcome": "tested",
+            "artifact-ref": "gen-1",
+        }
+    )
     resp = await client.post("/promote", json={"generation": 1})
     assert resp.status == 200
     data = await resp.json()
@@ -308,15 +358,17 @@ async def test_rollback_git_error(
 async def test_spawn_includes_campaign_id(
     client: TestClient,
     artifacts_root: Path,
-    tmp_path: Path,
 ) -> None:
-    art_dir = tmp_path / "art_campaign"
+    art_dir = artifacts_root / "art_campaign"
     art_dir.mkdir()
 
-    with patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls, \
-         patch("supervisor.supervisor.asyncio.create_task", return_value=None):
+    with (
+        patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls,
+        patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+    ):
         mock_docker = AsyncMock()
-        mock_docker.images.inspect = AsyncMock()
+        # Return the image so the image-found check passes
+        mock_docker.images.list = AsyncMock(return_value=[{"RepoTags": ["cambrian-base:latest"]}])
         mock_docker.close = AsyncMock()
         mock_docker_cls.return_value = mock_docker
 
@@ -324,7 +376,7 @@ async def test_spawn_includes_campaign_id(
             "/spawn",
             json={
                 "generation": 1,
-                "artifact-path": str(art_dir),
+                "artifact-path": "art_campaign",
                 "spec-hash": "sha256:" + "a" * 64,
                 "campaign-id": "campaign-abc12345",
             },
@@ -332,6 +384,7 @@ async def test_spawn_includes_campaign_id(
 
     assert resp.status == 200
     from supervisor import generations
+
     rec = generations.get(1)
     assert rec is not None
     assert rec.get("campaign-id") == "campaign-abc12345"

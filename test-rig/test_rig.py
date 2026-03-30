@@ -6,6 +6,7 @@ Stages: manifest → build → test → start → health → report
 Run inside a container with the artifact mounted at /workspace.
 Writes viability-report.json to /workspace on completion.
 """
+
 import contextlib
 import json
 import os
@@ -91,10 +92,10 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
     elif "manifest.json" not in files:
         errors.append("files: must include 'manifest.json'")
 
-    # created_at
-    ca = manifest.get("created_at")
+    # created-at
+    ca = manifest.get("created-at")
     if not isinstance(ca, str) or not _ISO8601_RE.match(ca):
-        errors.append(f"created_at: expected ISO-8601 datetime string, got {ca!r}")
+        errors.append(f"created-at: expected ISO-8601 datetime string, got {ca!r}")
 
     # entry
     entry = manifest.get("entry")
@@ -158,6 +159,7 @@ def _validate_contracts(contracts: Any) -> list[str]:
 # Stage 2: Build
 # ---------------------------------------------------------------------------
 
+
 def run_build(entry: dict[str, Any]) -> dict[str, Any]:
     cmd = entry.get("build", "")
     if not cmd:
@@ -166,8 +168,12 @@ def run_build(entry: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         result = subprocess.run(
-            cmd, shell=True, cwd=WORKSPACE,
-            capture_output=True, text=True, timeout=300,
+            cmd,
+            shell=True,
+            cwd=WORKSPACE,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
     except subprocess.TimeoutExpired as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -200,6 +206,7 @@ def run_build(entry: dict[str, Any]) -> dict[str, Any]:
 # Stage 3: Test
 # ---------------------------------------------------------------------------
 
+
 def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
     cmd = entry.get("test", "")
     if not cmd:
@@ -208,8 +215,12 @@ def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         result = subprocess.run(
-            cmd, shell=True, cwd=WORKSPACE,
-            capture_output=True, text=True, timeout=120,
+            cmd,
+            shell=True,
+            cwd=WORKSPACE,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     except subprocess.TimeoutExpired as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -303,6 +314,7 @@ def _parse_pytest_failures(output: str) -> list[dict[str, Any]]:
 # Stage 4: Start (with TCP readiness polling)
 # ---------------------------------------------------------------------------
 
+
 def _parse_port_from_url(url: str) -> tuple[str, int]:
     """Extract (host, port) from a URL. Returns ('localhost', 8401) on failure."""
     try:
@@ -321,8 +333,12 @@ def start_process(entry: dict[str, Any]) -> tuple[subprocess.Popen[str], dict[st
     cmd = entry.get("start", "")
     t0 = time.monotonic()
     proc = subprocess.Popen(
-        cmd, shell=True, cwd=WORKSPACE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cmd,
+        shell=True,
+        cwd=WORKSPACE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     return proc, {"passed": True, "duration_ms": duration_ms}
@@ -374,6 +390,7 @@ def wait_for_tcp(host: str, port: int, proc: subprocess.Popen[str]) -> dict[str,
 # ---------------------------------------------------------------------------
 # Stage 5: Health check (contracts or fallback)
 # ---------------------------------------------------------------------------
+
 
 def run_health_check(
     health_url: str,
@@ -576,6 +593,7 @@ def _run_fallback_health(health_url: str, t0: float) -> dict[str, Any]:
 # Fitness vector
 # ---------------------------------------------------------------------------
 
+
 def compute_fitness(
     checks: dict[str, Any],
     manifest: dict[str, Any],
@@ -594,9 +612,7 @@ def compute_fitness(
         if stage in stages_completed:
             fitness[key] = checks.get(stage, {}).get("duration_ms", 0)
 
-    fitness["total_duration_ms"] = sum(
-        checks.get(s, {}).get("duration_ms", 0) for s in ALL_STAGES
-    )
+    fitness["total_duration_ms"] = sum(checks.get(s, {}).get("duration_ms", 0) for s in ALL_STAGES)
 
     # Test metrics
     if "test" in stages_completed:
@@ -604,9 +620,7 @@ def compute_fitness(
         tests_passed = test_result.get("tests_passed", -1)
         tests_run = test_result.get("tests_run", -1)
         fitness["test_count"] = tests_run
-        fitness["test_pass_rate"] = (
-            round(tests_passed / tests_run, 4) if tests_run > 0 else 0.0
-        )
+        fitness["test_pass_rate"] = round(tests_passed / tests_run, 4) if tests_run > 0 else 0.0
 
     # File metrics from manifest
     files: list[str] = manifest.get("files", [])
@@ -679,6 +693,7 @@ def _count_lines(file_paths: list[str]) -> int:
 # Utility
 # ---------------------------------------------------------------------------
 
+
 def _tail_lines(text: str, n: int) -> str:
     """Return the last n lines of text."""
     lines = text.splitlines(keepends=True)
@@ -693,6 +708,7 @@ def _skipped_check() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
 
 def run_pipeline() -> None:
     manifest_path = WORKSPACE / "manifest.json"
@@ -810,7 +826,8 @@ def run_pipeline() -> None:
     test_result = run_tests(entry)
     # Store public fields in checks (no internal keys)
     checks["test"] = {
-        k: v for k, v in test_result.items()
+        k: v
+        for k, v in test_result.items()
         if k not in ("exit_code", "stdout_tail", "stderr_tail", "failures", "timed_out")
     }
     stages_completed.append("test")
@@ -942,6 +959,7 @@ def _suppress():  # type: ignore[return]
 # ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
+
 
 def _write_report(
     *,

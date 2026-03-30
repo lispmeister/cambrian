@@ -1,4 +1,5 @@
 """Git operations on the artifacts repository."""
+
 import asyncio
 import os
 from pathlib import Path
@@ -21,7 +22,8 @@ async def git(*args: str) -> str:
     cwd = artifacts_root()
     # Uses create_subprocess_exec (not shell=True) — no injection risk
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
