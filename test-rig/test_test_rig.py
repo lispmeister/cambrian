@@ -886,3 +886,292 @@ class TestFallbackHealth:
             result = test_rig._run_fallback_health("http://localhost:8401/health", time.monotonic())
         assert result["passed"] is False
         assert "generation" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Spec vector extraction
+# ---------------------------------------------------------------------------
+
+_FROZEN_BLOCK = """\
+<!-- BEGIN FROZEN: acceptance-vectors -->
+
+```spec-vector
+name: sv-a
+type: http
+method: GET
+path: /health
+expect:
+  status: 200
+```
+
+```spec-vector
+name: sv-b
+type: http
+method: GET
+path: /stats
+expect:
+  status: 200
+  body_has_keys:
+    - generation
+```
+
+<!-- END FROZEN: acceptance-vectors -->
+"""
+
+
+class TestExtractSpecVectors:
+    def test_no_frozen_markers_returns_empty(self, workspace: Path) -> None:
+        import test_rig
+
+        assert test_rig._extract_spec_vectors("no frozen block here") == []
+
+    def test_no_spec_vector_blocks_returns_empty(self, workspace: Path) -> None:
+        import test_rig
+
+        text = (
+            "<!-- BEGIN FROZEN: acceptance-vectors -->\n"
+            "no code blocks\n"
+            "<!-- END FROZEN: acceptance-vectors -->"
+        )
+        assert test_rig._extract_spec_vectors(text) == []
+
+    def test_extracts_all_vectors(self, workspace: Path) -> None:
+        import test_rig
+
+        vectors = test_rig._extract_spec_vectors(_FROZEN_BLOCK)
+        assert len(vectors) == 2
+        assert vectors[0]["name"] == "sv-a"
+        assert vectors[1]["name"] == "sv-b"
+
+    def test_vector_fields_parsed_correctly(self, workspace: Path) -> None:
+        import test_rig
+
+        vectors = test_rig._extract_spec_vectors(_FROZEN_BLOCK)
+        v = vectors[1]
+        assert v["method"] == "GET"
+        assert v["path"] == "/stats"
+        assert v["expect"]["body_has_keys"] == ["generation"]
+
+    def test_skips_non_dict_yaml(self, workspace: Path) -> None:
+        import test_rig
+
+        text = (
+            "<!-- BEGIN FROZEN: acceptance-vectors -->\n"
+            "```spec-vector\n- just a list\n```\n"
+            "<!-- END FROZEN: acceptance-vectors -->"
+        )
+        assert test_rig._extract_spec_vectors(text) == []
+
+    def test_begin_after_end_returns_empty(self, workspace: Path) -> None:
+        import test_rig
+
+        text = "<!-- END FROZEN: acceptance-vectors -->\n<!-- BEGIN FROZEN: acceptance-vectors -->"
+        assert test_rig._extract_spec_vectors(text) == []
+
+
+# ---------------------------------------------------------------------------
+# Spec file discovery
+# ---------------------------------------------------------------------------
+
+
+class TestFindSpecFile:
+    def test_returns_none_when_not_in_workspace(self, workspace: Path) -> None:
+        import test_rig
+
+        manifest: dict[str, Any] = {"files": ["manifest.json"]}
+        assert test_rig._find_spec_file(manifest) is None
+
+    def test_finds_via_manifest_files_array(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text("spec content")
+        manifest: dict[str, Any] = {"files": ["manifest.json", "CAMBRIAN-SPEC-005.md"]}
+        found = test_rig._find_spec_file(manifest)
+        assert found == spec_path
+
+    def test_finds_via_glob_when_not_in_files(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "spec" / "CAMBRIAN-SPEC-005.md"
+        spec_path.parent.mkdir()
+        spec_path.write_text("spec content")
+        manifest: dict[str, Any] = {"files": ["manifest.json"]}
+        found = test_rig._find_spec_file(manifest)
+        assert found == spec_path
+
+    def test_manifest_files_entry_missing_from_disk_falls_back_to_glob(
+        self, workspace: Path
+    ) -> None:
+        import test_rig
+
+        # manifest references a file that doesn't exist → glob finds the real one
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text("spec content")
+        manifest: dict[str, Any] = {"files": ["nonexistent/CAMBRIAN-SPEC-005.md"]}
+        found = test_rig._find_spec_file(manifest)
+        assert found == spec_path
+
+
+# ---------------------------------------------------------------------------
+# Spec vector evaluation in run_health_check
+# ---------------------------------------------------------------------------
+
+
+class TestRunHealthCheckWithSpecVectors:
+    def _make_ok_response(self, body: bytes = b'{"generation": 2, "status": "idle"}') -> Any:
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = body
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _make_err_response(self, status: int, body: bytes = b"{}") -> Any:
+        import urllib.error
+
+        e = urllib.error.HTTPError(url="", code=status, msg="", hdrs=None, fp=None)  # type: ignore[arg-type]
+        e.read = MagicMock(return_value=body)
+        return e
+
+    def test_spec_vectors_appear_in_result(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text(_FROZEN_BLOCK)
+        manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
+
+        with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
+            result = test_rig.run_health_check("http://localhost:8401/health", None, 2, manifest)
+
+        assert "spec-vectors" in result
+        assert "sv-a" in result["spec-vectors"]
+        assert "sv-b" in result["spec-vectors"]
+
+    def test_failing_spec_vector_fails_health(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text(_FROZEN_BLOCK)
+        manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
+
+        # sv-a expects 200 but server returns 500
+        with patch(
+            "urllib.request.urlopen", side_effect=self._make_err_response(500)
+        ):
+            result = test_rig.run_health_check("http://localhost:8401/health", None, 2, manifest)
+
+        assert result["passed"] is False
+        assert result["spec-vectors"]["sv-a"]["passed"] is False
+
+    def test_spec_vectors_evaluated_even_when_all_pass(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text(_FROZEN_BLOCK)
+        manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
+
+        with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
+            result = test_rig.run_health_check("http://localhost:8401/health", None, 2, manifest)
+
+        assert result["passed"] is True
+        assert all(v["passed"] for v in result["spec-vectors"].values())
+
+    def test_no_spec_file_falls_back_to_contracts(self, workspace: Path) -> None:
+        import test_rig
+
+        manifest: dict[str, Any] = {"files": ["manifest.json"]}
+        contracts = [
+            {"name": "c1", "type": "http", "method": "GET", "path": "/health",
+             "expect": {"status": 200}}
+        ]
+
+        with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
+            result = test_rig.run_health_check(
+                "http://localhost:8401/health", contracts, 2, manifest
+            )
+
+        assert "spec-vectors" not in result
+        assert "contracts" in result
+
+    def test_no_spec_file_no_contracts_uses_fallback(self, workspace: Path) -> None:
+        import test_rig
+
+        manifest: dict[str, Any] = {"files": ["manifest.json"]}
+
+        with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
+            result = test_rig.run_health_check("http://localhost:8401/health", None, 2, manifest)
+
+        # Fallback result has no spec-vectors or contracts sub-objects
+        assert "spec-vectors" not in result
+        assert "contracts" not in result
+
+    def test_spec_vectors_and_contracts_both_evaluated(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text(_FROZEN_BLOCK)
+        manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
+        contracts = [
+            {"name": "c1", "type": "http", "method": "GET", "path": "/health",
+             "expect": {"status": 200}}
+        ]
+
+        with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
+            result = test_rig.run_health_check(
+                "http://localhost:8401/health", contracts, 2, manifest
+            )
+
+        assert "spec-vectors" in result
+        assert "contracts" in result
+
+
+# ---------------------------------------------------------------------------
+# spec_vector_pass_rate in compute_fitness
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFitnessSpecVectorPassRate:
+    def test_spec_vector_pass_rate_present_when_vectors_in_checks(
+        self, workspace: Path
+    ) -> None:
+        import test_rig
+
+        checks = {
+            "health": {
+                "passed": True,
+                "duration_ms": 50,
+                "spec-vectors": {
+                    "sv-a": {"passed": True, "duration_ms": 10},
+                    "sv-b": {"passed": False, "duration_ms": 10, "error": "status mismatch"},
+                },
+            }
+        }
+        fitness = test_rig.compute_fitness(checks, {}, ["health"])
+        assert "spec_vector_pass_rate" in fitness
+        assert fitness["spec_vector_pass_rate"] == 0.5
+
+    def test_spec_vector_pass_rate_absent_without_spec_vectors(
+        self, workspace: Path
+    ) -> None:
+        import test_rig
+
+        checks = {"health": {"passed": True, "duration_ms": 50}}
+        fitness = test_rig.compute_fitness(checks, {}, ["health"])
+        assert "spec_vector_pass_rate" not in fitness
+
+    def test_spec_vector_pass_rate_all_pass(self, workspace: Path) -> None:
+        import test_rig
+
+        checks = {
+            "health": {
+                "passed": True,
+                "duration_ms": 50,
+                "spec-vectors": {
+                    "sv-a": {"passed": True, "duration_ms": 10},
+                    "sv-b": {"passed": True, "duration_ms": 10},
+                },
+            }
+        }
+        fitness = test_rig.compute_fitness(checks, {}, ["health"])
+        assert fitness["spec_vector_pass_rate"] == 1.0

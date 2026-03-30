@@ -388,22 +388,95 @@ def wait_for_tcp(host: str, port: int, proc: subprocess.Popen[str]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: Health check (contracts or fallback)
+# Stage 5: Health check (spec vectors + contracts or fallback)
 # ---------------------------------------------------------------------------
+
+
+def _find_spec_file(manifest: dict[str, Any]) -> Path | None:
+    """Find the spec file in WORKSPACE. Returns None if not found."""
+    for f in manifest.get("files", []):
+        if str(f).endswith("CAMBRIAN-SPEC-005.md"):
+            candidate = (WORKSPACE / f).resolve()
+            if candidate.exists():
+                return candidate
+    matches = list(WORKSPACE.glob("**/CAMBRIAN-SPEC-005.md"))
+    return matches[0] if matches else None
+
+
+def _extract_spec_vectors(spec_text: str) -> list[dict[str, Any]]:
+    """Extract spec vectors from the FROZEN acceptance-vectors block."""
+    import yaml
+
+    begin_marker = "<!-- BEGIN FROZEN: acceptance-vectors -->"
+    end_marker = "<!-- END FROZEN: acceptance-vectors -->"
+    begin_idx = spec_text.find(begin_marker)
+    end_idx = spec_text.find(end_marker)
+    if begin_idx == -1 or end_idx == -1 or begin_idx >= end_idx:
+        return []
+
+    region = spec_text[begin_idx + len(begin_marker) : end_idx]
+    vectors: list[dict[str, Any]] = []
+    for m in re.finditer(r"```spec-vector\n(.*?)\n```", region, re.DOTALL):
+        doc = yaml.safe_load(m.group(1))
+        if isinstance(doc, dict):
+            vectors.append(doc)
+    return vectors
 
 
 def run_health_check(
     health_url: str,
     contracts: list[dict[str, Any]] | None,
     generation: int,
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run health check — contracts if present, fallback hard-coded otherwise."""
+    """Run health check — spec vectors first, then manifest contracts, then fallback."""
     t0 = time.monotonic()
 
-    if contracts:
-        return _run_contracts(health_url, contracts, generation, t0)
-    else:
+    # --- Extract spec vectors (Layer 1) ---
+    spec_vectors: list[dict[str, Any]] = []
+    if manifest is not None:
+        spec_file = _find_spec_file(manifest)
+        if spec_file is not None:
+            try:
+                spec_text = spec_file.read_text(encoding="utf-8")
+                spec_vectors = _extract_spec_vectors(spec_text)
+            except Exception as e:
+                print(f"[test-rig] Warning: failed to read spec vectors: {e}", flush=True)
+
+    # No spec vectors and no contracts → fallback
+    if not spec_vectors and not contracts:
         return _run_fallback_health(health_url, t0)
+
+    parsed = urlparse(health_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    all_passed = True
+    result: dict[str, Any] = {}
+
+    # Evaluate spec vectors first (per spec: vectors are the floor)
+    if spec_vectors:
+        sv_results: dict[str, Any] = {}
+        for vector in spec_vectors:
+            name = vector["name"]
+            sv_result = _eval_contract(base, vector, generation)
+            sv_results[name] = sv_result
+            if not sv_result["passed"]:
+                all_passed = False
+        result["spec-vectors"] = sv_results
+
+    # Evaluate manifest contracts (the ceiling)
+    if contracts:
+        contract_results: dict[str, Any] = {}
+        for contract in contracts:
+            name = contract["name"]
+            cr = _eval_contract(base, contract, generation)
+            contract_results[name] = cr
+            if not cr["passed"]:
+                all_passed = False
+        result["contracts"] = contract_results
+
+    result["passed"] = all_passed
+    result["duration_ms"] = int((time.monotonic() - t0) * 1000)
+    return result
 
 
 def _run_contracts(
@@ -665,6 +738,13 @@ def compute_fitness(
         passed = sum(1 for v in contracts_data.values() if v.get("passed"))
         fitness["contract_pass_rate"] = round(passed / total, 4) if total > 0 else 1.0
 
+    # Spec vector pass rate (absent if no spec vectors evaluated)
+    sv_data = health_result.get("spec-vectors")
+    if sv_data is not None and isinstance(sv_data, dict):
+        total = len(sv_data)
+        passed = sum(1 for v in sv_data.values() if v.get("passed"))
+        fitness["spec_vector_pass_rate"] = round(passed / total, 4) if total > 0 else 1.0
+
     # Stages completed
     fitness["stages_completed"] = stages_completed
 
@@ -896,7 +976,7 @@ def run_pipeline() -> None:
     # Stage 5: Health / contracts
     # -----------------------------------------------------------------------
     print(f"[test-rig] Stage: health ({health_url})", flush=True)
-    health_result = run_health_check(health_url, contracts, generation)
+    health_result = run_health_check(health_url, contracts, generation, manifest)
     checks["health"] = health_result
     stages_completed.append("health")
 

@@ -16,7 +16,7 @@ RUN uv venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 # Install Test Rig dependencies
-RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp
+RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp pyyaml
 
 # Create a non-root user — the Test Rig should not run as root
 RUN useradd -m -s /bin/bash cambrian
