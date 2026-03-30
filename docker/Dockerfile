@@ -8,12 +8,15 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Install git (needed by Test Rig for artifact inspection)
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Create virtualenv — all pip installs (including entry.build) go here
-RUN python -m venv /venv
+# Install uv — used for all dependency installation (host parity, 10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Create virtualenv via uv — all installs (including entry.build) go here
+RUN uv venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 # Install Test Rig dependencies
-RUN pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp
+RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp
 
 # Create a non-root user — the Test Rig should not run as root
 RUN useradd -m -s /bin/bash cambrian

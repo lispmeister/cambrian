@@ -139,7 +139,7 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
   "files": ["src/prime.py", "tests/test_prime.py", "manifest.json", "spec/CAMBRIAN-SPEC-005.md"],
   "created-at": "2026-03-23T12:00:00Z",
   "entry": {
-    "build": "pip install -r requirements.txt",
+    "build": "uv pip install -r requirements.txt",
     "test": "python -m pytest tests/ -v",
     "start": "python src/prime.py",
     "health": "http://localhost:8401/health"

@@ -87,7 +87,7 @@ Project tooling:
 
 ### Always use virtual environments
 
-All Python code — Supervisor, Test Rig, and generated artifacts — MUST run inside a virtual environment. The host-side venv is created and managed by `uv` (`uv venv`, `uv sync`). Inside containers, the Dockerfile creates a venv at `/venv` and activates it. The `entry.build` command in artifacts installs into the container's venv, never into the system Python. This prevents dependency conflicts and keeps the system Python clean.
+All Python code — Supervisor, Test Rig, and generated artifacts — MUST run inside a virtual environment. Both host and container use `uv` exclusively — never raw `pip` or `python -m venv`. The host-side venv is created with `uv venv` and managed with `uv sync`. Inside containers, the Dockerfile creates a venv at `/venv` via `uv venv` and activates it. The `entry.build` command in artifacts uses `uv pip install -r requirements.txt`, which installs into `/venv`. This prevents dependency conflicts, keeps the system Python clean, and gives 10-100x faster installs compared to pip.
 
 ### Type safety
 
@@ -433,7 +433,7 @@ Stage 1 — Read Manifest:
 Stage 2 — Build:
   - Run entry.build as shell command in /workspace
   - Capture stdout/stderr (used for diagnostics on failure, see §2.6)
-  - Timeout: 300 seconds (pip install in an uncached container can easily exceed 120s)
+  - Timeout: 300 seconds (generous upper bound; `uv pip install` in an uncached container typically completes in under 30s — the timeout exists for pathological dependency trees, not normal cases)
   - Fail: non-zero exit code or timeout
 
 Stage 3 — Test:
@@ -1066,8 +1066,11 @@ FROM python:3.14-slim
 # artifact workspace on the host.
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Create virtual environment (activated for all subsequent commands)
-RUN python -m venv /venv
+# Install uv — used for all dependency installation (host parity, 10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Create virtual environment via uv (activated for all subsequent commands)
+RUN uv venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 # Test Rig lives in the image, not the artifact
@@ -1084,7 +1087,8 @@ ENTRYPOINT ["python", "/test-rig/test_rig.py"]
 
 - `python:3.14-slim` is the standard Python 3.14 image. Free-threaded build (3.14t) is deferred to M2.
 - `PYTHONDONTWRITEBYTECODE=1` MUST be set. Without it, every `pytest` and `python` invocation writes `__pycache__/` directories into `/workspace`, which leak through the bind mount onto the host filesystem. The container is ephemeral — bytecode caching provides no benefit.
-- A virtual environment at `/venv` is created at image build time and activated via `PATH`. All `pip install` commands (including `entry.build`) install into `/venv`, never the system Python.
+- `uv` is copied from its official image (`ghcr.io/astral-sh/uv:latest`) as a single binary. It is used for all dependency installation — both the Test Rig's own deps at image build time and the artifact's `entry.build` command at runtime. Never use raw `pip` or `python -m venv` inside containers.
+- A virtual environment at `/venv` is created at image build time via `uv venv` and activated via `PATH`. All `uv pip install` commands (including `entry.build`) install into `/venv`, never the system Python.
 - The Test Rig is baked in so every container can verify artifacts without additional setup.
 - When running Prime (not the Test Rig), the entrypoint is overridden: `docker run --entrypoint python cambrian-base src/prime.py`.
 
