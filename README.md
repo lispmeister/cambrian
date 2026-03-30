@@ -8,13 +8,15 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 ## Status
 
-**M1 complete — Gen-1 produced 5 viable offspring autonomously.**
+**M1 complete. Pre-M2 quality hardening done. Anti-cheating verification layers specced.**
 
 What's done:
 - Phase 0: Supervisor, Test Rig, Docker image, gen-0 validated end-to-end
 - M1: Gen-1 ran 44 minutes, 10 total generations, 5 promoted (gen-4, gen-6, gen-8, gen-9, gen-10), all at 100% test pass rate. 474,834 cumulative tokens.
+- Pre-M2 hardening: 16-bead code review (specs, Python, Docker). Path traversal fix, field naming unification, Docker non-root user, 87 integration tests across 3 test files. 178 total tests, all passing.
+- Verification layers: Three-layer anti-cheating model specced — FROZEN acceptance vectors (M1), dual-blind LLM examiner (M2), adversarial red-team (M2). Prevents generations from gaming their own fitness.
 
-Next: M2 — spec mutation, fitness vectors, population campaigns. See `research/06-proposal.md`.
+Next: Implement spec vector evaluation in Test Rig, then M2 — container isolation, campaign runner, fitness vectors, spec mutation. See `research/06-proposal.md`.
 
 ## The Idea
 
@@ -29,8 +31,8 @@ This came from [Loom](https://github.com/lispmeister/loom), which tried source-c
 Three components:
 
 - **Prime** — The organism. Reads the spec, calls an LLM, produces a complete codebase, asks the Supervisor to verify it. Contains its own source, its spec, and its running process.
-- **Supervisor** — Host infrastructure. Manages Docker containers, tracks generation history, executes promote/rollback. Not part of the organism — it persists across generations.
-- **Test Rig** — Mechanical verification. Builds the artifact, runs tests, starts the process, checks health. Returns a binary viability verdict. No LLM involved.
+- **Supervisor** — Host infrastructure. Manages Docker containers, tracks generation history, executes promote/rollback. In M2, orchestrates dual-blind and red-team verification. Not part of the organism — it persists across generations.
+- **Test Rig** — Mechanical verification. Builds the artifact, runs tests, starts the process, checks health contracts and FROZEN spec acceptance vectors. Returns a binary viability verdict. No LLM involved.
 
 ```
   ┌───────────┐       ┌──────────────┐       ┌───────────┐
@@ -53,7 +55,8 @@ Three components:
 ## Milestones
 
 - **M1: Reproduce.** ✓ Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. Completed 2026-03-29: 5 viable offspring, 474k tokens.
-- **M2: Self-modify.** Prime mutates its own spec and tests whether the mutation produces fitter offspring.
+- **Pre-M2 Hardening.** ✓ 3-phase code review, 87 integration tests, anti-cheating verification layers specced. Completed 2026-03-30.
+- **M2: Self-modify.** Prime mutates its own spec and tests whether the mutation produces fitter offspring. Three verification layers prevent cheating: FROZEN spec vectors, dual-blind examiner, adversarial red-team.
 
 ## Tech Stack
 
@@ -77,6 +80,7 @@ spec/
   archive/                 — Superseded specs (historical reference only)
 supervisor/                — Host-side Supervisor (aiohttp server)
 test-rig/                  — Mechanical verification pipeline
+tests/                     — Integration tests (spec compliance, security, lifecycle)
 docker/                    — Dockerfile and build script for cambrian-base
 lab-journal/               — Discussion and decision logs
 ```
