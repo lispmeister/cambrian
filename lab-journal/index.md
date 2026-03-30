@@ -3,8 +3,8 @@
 This is the central Table of Contents for the entire lab journal, following Howard M. Kanare’s guidelines in *Writing the Laboratory Notebook*.  
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
-**Last updated:** 2026-03-30  
-**Total entries:** 12 (plus this index)  
+**Last updated:** 2026-03-30
+**Total entries:** 13 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -21,6 +21,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-03-29   | [journal-2026-03-29.md](journal-2026-03-29.md) | M1 first autonomous loop                                                  | M1 milestone achieved                     |
 | 2026-03-30   | [journal-2026-03-30.md](journal-2026-03-30.md) | Pre-M2 quality hardening: spec & code review, 87 new integration tests, path-traversal fix, anti-cheating verification layers (M1/M2) | M1 complete → Pre-M2 hardening            |
 | 2026-03-30b  | [journal-2026-03-30b.md](journal-2026-03-30b.md) | CLAUDE.md agent instructions (+108 lines), Docker pip → uv switch | cambrian-yq8, cambrian-luv                |
+| 2026-03-30c  | [journal-2026-03-30c.md](journal-2026-03-30c.md) | Layer 1 spec-vector evaluation in Test Rig; container isolation hardening (separate /output mount, process group kill); Kanare journal compliance | cambrian-4do, cambrian-2cf |
 
 ---
 
