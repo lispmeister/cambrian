@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.11.0
+version: 0.12.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -38,6 +38,34 @@ These rules are absolute. They define what it means to be Prime. In M2, the Spec
 - **Viability Report** — Structured JSON written by the Test Rig at `/workspace/viability-report.json`. Binary outcome: `viable` or `non-viable`. Read by Prime via the generation record.
 - **Hash** — All hash values in Cambrian use the format `sha256:<64 hex characters>`. The `sha256:` prefix is literal text, not a URL scheme. Example: `sha256:a3b4c5...ef` (exactly 64 hex chars after the colon). An LLM MUST include this prefix when generating hash fields.
 
+## Problem Statement
+
+A self-reproducing code factory needs a genome — a document that, when read by an LLM, produces a complete working organism capable of reading the same document and reproducing. This spec is that genome.
+
+The core challenge: the spec must be complete enough that a fresh LLM, with no external context, can produce a Prime that passes mechanical verification *and* can regenerate itself. Every ambiguity in the spec is a potential failure mode in the next generation.
+
+## Goals
+
+1. Define Prime completely enough that an LLM can produce a working implementation from this document alone.
+2. Define all wire formats (manifest, viability report, API contracts) precisely enough to prevent drift across generations.
+3. Carry the M2 mutation strategy in the genome itself — so mutation logic can evolve in M3+.
+
+## Non-Goals
+
+- Runtime performance optimization (M1 is functional, not fast)
+- Multi-language support (Python 3.14 only)
+- Production security (no authentication, no TLS)
+- Dashboard or administrative UI
+- Horizontal scaling or multi-Prime coordination
+
+## Design Principles
+
+1. **Fail loud.** Any ambiguity in verification produces a non-viable verdict, not a silent pass.
+2. **Asyncio by default.** All I/O must be non-blocking. The HTTP server must remain responsive during generation.
+3. **Never self-promote.** Prime MUST NOT declare itself viable. Only the Test Rig verdict counts.
+4. **The manifest is a verified contract, not generated content.** Hashes and metadata are computed by Prime's own code, not emitted by the LLM.
+5. **Specs before code.** When the spec and the implementation disagree, fix the spec first, then fix the code.
+
 ## What Prime Does
 
 Prime is an async Python HTTP server that runs inside a Docker container. It does four things in a loop:
@@ -70,7 +98,7 @@ The Supervisor runs on the host at `CAMBRIAN_SUPERVISOR_URL` (default `http://ho
 | Method | Path | Request Body | Success Response |
 |--------|------|-------------|-----------------|
 | GET | `/versions` | — | `[GenerationRecord, ...]` |
-| GET | `/stats` | — | `{"generation": N, "status": "...", "uptime": N}` |
+| GET | `/stats` | — | `{"generation": N, "status": "idle|spawning|testing|promoting|rolling-back", "uptime": N}` |
 | POST | `/spawn` | `{"spec-hash": "...", "generation": N, "artifact-path": "gen-N"}` | `{"ok": true, "container-id": "...", "generation": N}` |
 | POST | `/promote` | `{"generation": N}` | `{"ok": true, "generation": N}` |
 | POST | `/rollback` | `{"generation": N}` | `{"ok": true, "generation": N}` |
@@ -81,16 +109,17 @@ All POST endpoints return `{"ok": false, "error": "..."}` on failure.
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `generation` | MUST | Integer >= 1. The generation number. |
+| `generation` | MUST | Integer >= 1. The generation number. (Generation 0 is reserved for hand-crafted test artifacts; those do not receive GenerationRecords.) |
 | `parent` | MUST | Integer >= 0. Parent generation (0 for bootstrap). |
 | `spec-hash` | MUST | SHA-256 hex of the spec file (with `sha256:` prefix). |
 | `artifact-hash` | MUST | SHA-256 hex of the artifact files (with `sha256:` prefix). |
 | `outcome` | MUST | One of: `in_progress`, `tested`, `promoted`, `failed`, `timeout`. `in_progress` while the Test Rig runs. `tested` once the Test Rig exits (Prime then calls /promote or /rollback). Terminal states: `promoted`, `failed`, `timeout`. |
 | `viability` | MAY | The full viability report. Present once outcome is `tested` or terminal. Absent while `in_progress`. |
-| `artifact_ref` | MAY | Git ref (tag) pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for failed. Absent while `in_progress`. |
+| `artifact-ref` | MAY | Git ref (tag) pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for failed. Absent while `in_progress`. |
 | `created` | MUST | ISO-8601 timestamp (when spawn was received). |
 | `completed` | MAY | ISO-8601 timestamp. Absent while `in_progress`. |
 | `container-id` | MUST | Name of the Test Rig Docker container. |
+| `campaign-id` | MAY | String. Groups generations into a campaign. Absent in M1. In M2, all generations run against the same spec variant share a `campaign-id`. Format: `campaign-<8-char-uuid>`. Consumers MUST treat absence as equivalent to no campaign. |
 
 `POST /spawn` is asynchronous — it starts the Test Rig and returns immediately. Prime polls `GET /versions` until the generation record's outcome is no longer `in_progress` (see [Generation Loop](#the-generation-loop) step 8).
 
@@ -108,7 +137,7 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
   "producer-model": "claude-opus-4-6",
   "token-usage": {"input": 45000, "output": 12000},
   "files": ["src/prime.py", "tests/test_prime.py", "manifest.json", "spec/CAMBRIAN-SPEC-005.md"],
-  "created_at": "2026-03-23T12:00:00Z",
+  "created-at": "2026-03-23T12:00:00Z",
   "entry": {
     "build": "pip install -r requirements.txt",
     "test": "python -m pytest tests/ -v",
@@ -126,7 +155,9 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 }
 ```
 
-**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created_at` (ISO-8601), `entry.build`, `entry.test`, `entry.start` (SHOULD use `python path/to/script.py` syntax, NOT `python -m module.path` — the `-m` form requires `__init__.py` files and breaks in containers without proper package structure), `entry.health`.
+**Field naming convention:** All JSON field names in manifests, generation records, and API bodies use kebab-case (hyphens). Python code uses snake_case internally. The canonical wire format is kebab-case.
+
+**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 0; 0 is reserved for hand-crafted test artifacts, LLM-generated artifacts MUST use >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created-at` (ISO-8601), `entry.build`, `entry.test`, `entry.start` (SHOULD use `python path/to/script.py` syntax, NOT `python -m module.path` — the `-m` form requires `__init__.py` files and breaks in containers without proper package structure), `entry.health`.
 
 **`artifact-hash` algorithm** — this MUST be implemented exactly or hash verification will fail:
 
@@ -149,7 +180,7 @@ The null byte separator (`b"\0"`) between `path_bytes` and `file_bytes` is criti
 
 **SHOULD fields:** `contracts` (array of verification contract objects). When present, contracts are the sole source of health-check verification — the Test Rig does not supplement with hardcoded checks.
 
-`spec-lineage` (array of `sha256:...` hash strings): ordered list from oldest ancestor spec to immediate parent spec. Empty array `[]` for artifacts produced from the original human-written spec. Present when the spec was produced by M2+ mutation. M1 ignores this field; M2 uses it to reconstruct evolutionary history independent of git.
+**MAY field:** `spec-lineage` (array of `sha256:...` hash strings): ordered list from oldest ancestor spec to immediate parent spec. Empty array `[]` for artifacts produced from the original human-written spec. Present when the spec was produced by M2+ mutation. M1 ignores this field; M2 uses it to reconstruct evolutionary history independent of git.
 
 **Version compatibility:** `cambrian-version: 1` is the M1 contract defined in this document. Future versions (2+) MAY add fields (e.g., `mutation-type`, `parent-spec-hash`, `campaign-id`) that version-1 consumers ignore. The Test Rig MUST reject manifests with `cambrian-version` greater than its supported maximum and MUST accept manifests with `cambrian-version` at or below its supported maximum.
 
@@ -243,8 +274,10 @@ Pipeline is fail-fast: if `build` fails, `test`/`start`/`health` are not attempt
 
 Each retry is a NEW generation with a new number. Retries MUST NOT reuse previous LLM output — each call produces a complete codebase. The retry counter tracks how many consecutive failures have occurred for the same "intent" (same spec-hash). A successful promotion resets the counter.
 
-Maximum retries: `CAMBRIAN_MAX_RETRIES` (default 3).
-Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
+Maximum retries: `CAMBRIAN_MAX_RETRIES` (default 3). Tracks consecutive failures for the same spec-hash. A successful promotion resets this counter.
+Maximum generations: `CAMBRIAN_MAX_GENS` (default 5). Counts all generation attempts in a Prime's lifetime.
+
+**Interaction:** Prime stops when *either* limit is reached first. `CAMBRIAN_MAX_RETRIES` prevents infinite loops on a broken spec; `CAMBRIAN_MAX_GENS` caps total cost. Example: with `MAX_RETRIES=3` and `MAX_GENS=5`, if the first 3 generations all fail consecutively, Prime stops (retries exhausted) even though only 3 of 5 generation slots are used.
 
 ## Failure Handling
 
@@ -259,6 +292,7 @@ Maximum generations: `CAMBRIAN_MAX_GENS` (default 5).
 | LLM rate-limited | HTTP 429 from LLM API | Respect `retry-after` header. Pause and retry. Do not count as a generation failure. |
 | All retries exhausted | `CAMBRIAN_MAX_RETRIES` reached for one generation | Record generation as failed. Stop. Do not modify the spec. |
 | Container crash | Test Rig container exits without writing viability report | Supervisor records `outcome: failed`. Treat as non-viable. Retry. |
+| Supervisor crash (M1) | Supervisor restarts while a generation is `in_progress` | Recovery is manual in M1: restart the Supervisor, inspect `generations.json`, manually set the orphaned record to `failed`. The background asyncio task monitoring the container is lost on restart. Automatic crash recovery is deferred to M2. |
 
 ## LLM Integration
 
@@ -342,6 +376,8 @@ Parent generation: {parent}
 ```
 
 ### Informed retry prompt
+
+The informed retry uses the **same system message** as the fresh generation prompt (see above). Only the user message changes — it adds failure context:
 
 When retrying after a failure, Prime adds failure context to the user message:
 
@@ -562,6 +598,35 @@ Gen-2     → Gen-3 echo server (Minimal Spec) ← operationality proof
 
 The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
+## Examples
+
+### Happy path: Gen-1 reproduces to Gen-2
+
+1. Gen-1 Prime starts. `CAMBRIAN_GENERATION=1`. `/stats` returns `{"generation": 1, "status": "idle", "uptime": 0}`.
+2. Prime calls `GET /versions` → `[]` (no history yet). Offspring will be generation 2.
+3. Prime reads the spec, hashes it: `spec-hash = sha256:a3b4...`.
+4. Prime calls the LLM (claude-sonnet-4-6). The LLM emits `<file path="src/prime.py">...</file:end>` blocks.
+5. Prime writes files to `/workspace/gen-2/`, computes `artifact-hash`, writes `manifest.json` with `{"generation": 2, "created-at": "2026-03-23T12:00:00Z", ...}`.
+6. Prime calls `POST /spawn {"generation": 2, "artifact-path": "gen-2", "spec-hash": "sha256:a3b4..."}`.
+7. Supervisor creates git branch `gen-2`, commits the artifact, starts a Test Rig container.
+8. Prime polls `GET /versions` every 2 seconds. After 45 seconds, the record shows `outcome: tested, viability: {status: viable, ...}`.
+9. Prime calls `POST /promote {"generation": 2}`. Supervisor merges `gen-2` to main, tags `gen-2`, sets `outcome: promoted`.
+10. Prime stops (one successful promotion per loop).
+
+### Retry path: Gen-2 fails, Gen-3 fixes it
+
+1. Prime produces Gen-2. Test Rig reports `status: non-viable, failure_stage: test, diagnostics: {summary: "3 of 8 tests failed", ...}`.
+2. Prime calls `POST /rollback {"generation": 2}`. Supervisor tags `gen-2-failed`.
+3. Prime reads the failed source code from `/workspace/gen-2/` and the diagnostics.
+4. Prime calls the LLM with the informed retry prompt (same system message, enriched user message with failed code + diagnostics). Model escalates to `CAMBRIAN_ESCALATION_MODEL` (claude-opus-4-6).
+5. Prime produces Gen-3. Test Rig reports `status: viable`. Prime promotes Gen-3.
+
+## References
+
+- [BOOTSTRAP-SPEC-002](BOOTSTRAP-SPEC-002.md) — Supervisor, Test Rig, Docker infrastructure, and bootstrap procedure
+- [SPEC-STYLE-GUIDE](SPEC-STYLE-GUIDE.md) — Conventions for writing and versioning specs
+- [Loom](https://github.com/lispmeister/loom) — Predecessor project (archived at v0.2.0)
+
 ---
 
 ## M2: Genome Evolution
@@ -667,7 +732,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.10.5"
+version: "0.12.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"

@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.4
+version: 0.8.5
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -215,7 +215,7 @@ app.router.add_post("/rollback", rollback_handler)
   "spec-hash": "sha256:abc123...",
   "artifact-hash": "sha256:def456...",
   "outcome": "promoted",
-  "artifact_ref": "gen-1",
+  "artifact-ref": "gen-1",
   "created": "2026-03-21T14:30:00Z",
   "completed": "2026-03-21T14:32:30Z",
   "container-id": "lab-gen-1",
@@ -229,12 +229,12 @@ app.router.add_post("/rollback", rollback_handler)
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `generation` | MUST | Integer >= 1. |
+| `generation` | MUST | Integer >= 1. (Generation 0 is reserved for hand-crafted test artifacts; those do not receive GenerationRecords.) |
 | `parent` | MUST | Integer >= 0. |
 | `spec-hash` | MUST | SHA-256 hex digest (with `sha256:` prefix). |
 | `artifact-hash` | MUST | SHA-256 hex digest read from `manifest.json` in the artifact. |
 | `outcome` | MUST | One of: `in_progress`, `tested`, `promoted`, `failed`, `timeout`. `in_progress` while Test Rig runs. `tested` once the Test Rig exits and before Prime calls /promote or /rollback. Terminal states: `promoted`, `failed`, `timeout`. |
-| `artifact_ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in_progress`. |
+| `artifact-ref` | MAY | Git ref pointing to the artifact: `gen-N` for promoted, `gen-N-failed` for rolled back. Absent while `in_progress`. |
 | `created` | MUST | ISO-8601 timestamp (when spawn was received). |
 | `completed` | MAY | ISO-8601 timestamp. Absent while `in_progress`. |
 | `container-id` | MUST | Name of the Test Rig container (e.g., `lab-gen-1`). |
@@ -330,12 +330,12 @@ Promote sequence (artifacts repo):
 2. `git merge gen-N --no-ff -m "Promote generation N"` — merge
 3. `git tag -a gen-N -m "Generation N promoted"` — annotated tag
 4. `git branch -d gen-N` — delete branch
-5. Update generation record: `outcome=promoted`, `artifact_ref="gen-N"`
+5. Update generation record: `outcome=promoted`, `artifact-ref="gen-N"`
 
 Rollback sequence (artifacts repo):
 1. `git tag -a gen-N-failed -m "Generation N failed"` — preserve artifact
 2. `git branch -D gen-N` — delete branch
-3. Update generation record: `outcome=failed`, `artifact_ref="gen-N-failed"`
+3. Update generation record: `outcome=failed`, `artifact-ref="gen-N-failed"`
 
 `artifacts_root = os.environ.get("CAMBRIAN_ARTIFACTS_ROOT", "../cambrian-artifacts")`
 
@@ -417,14 +417,14 @@ Stage 1 — Read Manifest:
 
   Manifest validation checklist (MUST fields):
   - cambrian-version: integer, must equal 1
-  - generation: integer, >= 0
+  - generation: integer, >= 0 (0 is reserved for hand-crafted test artifacts; LLM-generated artifacts MUST use >= 1)
   - parent-generation: integer, >= 0
   - spec-hash: string, matches /^sha256:[0-9a-f]{64}$/
   - artifact-hash: string, matches /^sha256:[0-9a-f]{64}$/
   - producer-model: string, non-empty
   - token-usage: object with integer fields "input" (>= 0) and "output" (>= 0)
   - files: non-empty array of strings, must include "manifest.json"
-  - created_at: string, valid ISO-8601 datetime
+  - created-at: string, valid ISO-8601 datetime
   - entry.build: string, non-empty
   - entry.test: string, non-empty
   - entry.start: string, non-empty
@@ -740,7 +740,7 @@ When the Supervisor rolls back a generation, it MUST preserve the failed code as
 # rollback (updated):
 #   1. Tag the failed branch: git tag -a gen-N-failed -m "Generation N failed"
 #   2. Delete the branch: git branch -D gen-N
-#   3. Update generation record: outcome=failed, artifact_ref="gen-N-failed"
+#   3. Update generation record: outcome=failed, artifact-ref="gen-N-failed"
 ```
 
 The tag `gen-N-failed` is a permanent, lightweight reference to the failed code. It does not pollute the branch namespace. Tags are cheap in git — thousands of failed-generation tags have negligible cost.
@@ -749,11 +749,11 @@ The tag `gen-N-failed` is a permanent, lightweight reference to the failed code.
 
 #### Generation Record Extension
 
-The generation record gains an `artifact_ref` field:
+The generation record gains an `artifact-ref` field:
 
 | Field | Required | Rule |
 |-------|----------|------|
-| `artifact_ref` | MAY | String. Git ref (tag name) pointing to the artifact's source tree. Present for both promoted generations (tag `gen-N`) and failed generations (tag `gen-N-failed`). Absent for `in_progress` generations. |
+| `artifact-ref` | MAY | String. Git ref (tag name) pointing to the artifact's source tree. Present for both promoted generations (tag `gen-N`) and failed generations (tag `gen-N-failed`). Absent for `in_progress` generations. |
 
 Example generation record for a failed attempt:
 
@@ -762,7 +762,7 @@ Example generation record for a failed attempt:
   "generation": 2,
   "parent": 1,
   "outcome": "failed",
-  "artifact_ref": "gen-2-failed",
+  "artifact-ref": "gen-2-failed",
   "viability": {
     "status": "non-viable",
     "failure_stage": "test",
@@ -825,6 +825,7 @@ The Test Rig SHOULD compute a `fitness` object and include it in every viability
 | `token_input` | `manifest.token-usage.input` | Direct copy |
 | `token_output` | `manifest.token-usage.output` | Direct copy |
 | `contract_pass_rate` | `checks.health.contracts` | Passed contracts / total contracts. `1.0` if all pass, `0.0` if all fail. **Absent** if manifest contains no `contracts` array (fallback health check mode). In M2, this is the core fitness signal — it measures how well the generated code satisfies its own declared behavioral contracts. |
+| `stages_completed` | Pipeline execution | MUST. Array of stage names that were attempted, regardless of whether they passed. Example: `["manifest", "build", "test"]` for a generation that failed at `start`. Always present — for a fully viable run it is `["manifest", "build", "test", "start", "health"]`. |
 
 **Implementation:** Fitness computation is a post-processing step in the Report phase, after all pipeline stages have completed (or failed). The Test Rig:
 
@@ -978,7 +979,7 @@ cambrian-artifacts/   ← separate git repo (CAMBRIAN_ARTIFACTS_ROOT)
     "tests/test_server.py",
     "requirements.txt"
   ],
-  "created_at": "2026-03-21T00:00:00Z",
+  "created-at": "2026-03-21T00:00:00Z",
   "entry": {
     "build": "pip install -r requirements.txt",
     "test": "python -m pytest tests/ -v",
@@ -1354,7 +1355,7 @@ All configuration is via environment variables on the host.
 - `diagnostics.failures[].error` strings are capped at 500 characters
 - Diagnostics are preserved in generation records via `GET /versions`
 - Rollback creates `gen-N-failed` tag before deleting the branch
-- Generation records include `artifact_ref` pointing to the failed tag
+- Generation records include `artifact-ref` pointing to the failed tag
 - Prime reads failed source code from local filesystem (not from git)
 - Each retry gets a new generation number; `gen-N-failed` tags are never suffixed
 - Viable viability reports include `fitness` object with all metrics
@@ -1393,7 +1394,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.8.3"
+version: "0.8.5"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
