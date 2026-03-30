@@ -119,6 +119,32 @@ Python 3.14 for M1 (free-threaded build deferred to M2). See BOOTSTRAP-SPEC-002 
 - **M1: Reproduce** — Prime reads spec → generates codebase → offspring passes test rig → offspring can do the same
 - **M2+: Self-modify** — Prime mutates its own spec, tests whether the mutation produces fitter offspring
 
+## Lab Journal
+
+Every session that changes code, specs, or design decisions **must** have a journal entry. The journal follows Howard M. Kanare's *Writing the Laboratory Notebook* principles: permanent, replicable, self-contained records.
+
+**Starting a new entry:**
+1. Copy `lab-journal/TEMPLATE.md` to `lab-journal/journal-YYYY-MM-DD.md` (append `b`, `c`, … for multiple sessions on the same day).
+2. Fill in the date and session goals before you start work.
+3. Add sections as the session progresses — don't backfill.
+
+**Ending an entry:**
+Fill in the footer block at the bottom:
+- **Signed / Date** — always
+- **Participants & Tools** — model name (from the Co-Authored-By tag in the commit), Python version, key libraries
+- **Commit / Witness** — the git commit hash(es) produced in this session + bead IDs
+- **Related Specs / Beads** — active spec versions and bead IDs
+- **Next journal entry** — next file name (or `journal-YYYY-MM-DD.md (use TEMPLATE.md)`)
+
+**After each entry is committed:**
+Update `lab-journal/index.md` — add one row to the TOC table with the date, filename, key topics, and milestone/bead.
+
+**Format rules (Kanare):**
+- Record immediately — no reconstructing from memory hours later.
+- Each entry must stand alone: enough detail that another person (or future you) could reproduce the session.
+- Failures and rollbacks are as important as successes — record both.
+- Link to specs, beads, and commit hashes; don't describe what git already records.
+
 ## Issue Tracking and Commit Messages
 
 **Every piece of work MUST have a bead.** No code without a tracking issue. See [AGENTS.md](AGENTS.md) for full beads (`bd`) workflow.

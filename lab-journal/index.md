@@ -26,10 +26,9 @@ It makes the notebook navigable years later and serves as the front-matter every
 **Attachments / Supporting materials** (add rows as needed)  
 None yet — when you add plots, screenshots, or logs, create an `attachments/` subfolder and link them here with date and description.
 
-**Related project files** (for quick reference)  
-- [CAMBRIAN-SPEC-005](../CAMBRIAN-SPEC-005)  
-- [BOOTSTRAP-SPEC-002](../BOOTSTRAP-SPEC-002)  
-- [README.md](README.md) in this folder  
-- [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
+**Related project files** (for quick reference)
+- [CAMBRIAN-SPEC-005](../spec/CAMBRIAN-SPEC-005.md)
+- [BOOTSTRAP-SPEC-002](../spec/BOOTSTRAP-SPEC-002.md)
+- [AGENTS.md](../AGENTS.md), [CLAUDE.md](../CLAUDE.md)
 
 **Archival note:** Every quarter, generate a PDF snapshot of the entire `lab-journal/` folder (including this index) and tag a GitHub release for immutable long-term storage.
