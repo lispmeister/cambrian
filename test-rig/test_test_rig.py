@@ -15,8 +15,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def set_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
     monkeypatch.setenv("CAMBRIAN_WORKSPACE", str(tmp_path))
-    # Reload test_rig to pick up the new WORKSPACE path
+    monkeypatch.setenv("CAMBRIAN_OUTPUT_DIR", str(output_dir))
+    # Reload test_rig to pick up the new WORKSPACE / OUTPUT_DIR paths
     import sys
 
     if "test_rig" in sys.modules:
@@ -26,6 +29,11 @@ def set_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     return tmp_path
+
+
+@pytest.fixture
+def output_dir(tmp_path: Path) -> Path:
+    return tmp_path / "output"
 
 
 def _write_manifest(workspace: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -549,7 +557,7 @@ class TestContractEvaluation:
 
 
 class TestSkippedStages:
-    def test_unattempted_stages_have_passed_false(self, workspace: Path) -> None:
+    def test_unattempted_stages_have_passed_false(self, workspace: Path, output_dir: Path) -> None:
         """Stages after a failure must appear with passed=False, duration_ms=0."""
         import test_rig
 
@@ -559,7 +567,7 @@ class TestSkippedStages:
         with pytest.raises(SystemExit):
             test_rig.run_pipeline()
 
-        report_path = workspace / "viability-report.json"
+        report_path = output_dir / "viability-report.json"
         assert report_path.exists()
         report = json.loads(report_path.read_text())
         checks = report["checks"]
@@ -580,7 +588,7 @@ class TestSkippedStages:
 
 
 class TestDiagnostics:
-    def test_manifest_failure_diagnostics(self, workspace: Path) -> None:
+    def test_manifest_failure_diagnostics(self, workspace: Path, output_dir: Path) -> None:
         import test_rig
 
         (workspace / "manifest.json").write_text('{"cambrian-version": 99}')
@@ -588,7 +596,7 @@ class TestDiagnostics:
         with pytest.raises(SystemExit):
             test_rig.run_pipeline()
 
-        report = json.loads((workspace / "viability-report.json").read_text())
+        report = json.loads((output_dir / "viability-report.json").read_text())
         diag = report.get("diagnostics")
         assert diag is not None
         assert diag["stage"] == "manifest"
@@ -598,7 +606,7 @@ class TestDiagnostics:
         assert isinstance(diag["stdout_tail"], str)
         assert isinstance(diag["stderr_tail"], str)
 
-    def test_non_viable_has_diagnostics(self, workspace: Path) -> None:
+    def test_non_viable_has_diagnostics(self, workspace: Path, output_dir: Path) -> None:
         import test_rig
 
         # Write manifest but no build command that can succeed
@@ -616,11 +624,11 @@ class TestDiagnostics:
         with pytest.raises(SystemExit):
             test_rig.run_pipeline()
 
-        report = json.loads((workspace / "viability-report.json").read_text())
+        report = json.loads((output_dir / "viability-report.json").read_text())
         assert report["status"] == "non-viable"
         assert "diagnostics" in report
 
-    def test_viable_has_no_diagnostics(self, workspace: Path) -> None:
+    def test_viable_has_no_diagnostics(self, workspace: Path, output_dir: Path) -> None:
         import test_rig
 
         m = _write_manifest(workspace)
@@ -634,7 +642,7 @@ class TestDiagnostics:
             checks=checks,
             fitness=fitness,
         )
-        report = json.loads((workspace / "viability-report.json").read_text())
+        report = json.loads((output_dir / "viability-report.json").read_text())
         assert report["status"] == "viable"
         assert "diagnostics" not in report
 
@@ -1056,9 +1064,7 @@ class TestRunHealthCheckWithSpecVectors:
         manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
 
         # sv-a expects 200 but server returns 500
-        with patch(
-            "urllib.request.urlopen", side_effect=self._make_err_response(500)
-        ):
+        with patch("urllib.request.urlopen", side_effect=self._make_err_response(500)):
             result = test_rig.run_health_check("http://localhost:8401/health", None, 2, manifest)
 
         assert result["passed"] is False
@@ -1082,8 +1088,13 @@ class TestRunHealthCheckWithSpecVectors:
 
         manifest: dict[str, Any] = {"files": ["manifest.json"]}
         contracts = [
-            {"name": "c1", "type": "http", "method": "GET", "path": "/health",
-             "expect": {"status": 200}}
+            {
+                "name": "c1",
+                "type": "http",
+                "method": "GET",
+                "path": "/health",
+                "expect": {"status": 200},
+            }
         ]
 
         with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
@@ -1113,8 +1124,13 @@ class TestRunHealthCheckWithSpecVectors:
         spec_path.write_text(_FROZEN_BLOCK)
         manifest: dict[str, Any] = {"files": ["CAMBRIAN-SPEC-005.md"]}
         contracts = [
-            {"name": "c1", "type": "http", "method": "GET", "path": "/health",
-             "expect": {"status": 200}}
+            {
+                "name": "c1",
+                "type": "http",
+                "method": "GET",
+                "path": "/health",
+                "expect": {"status": 200},
+            }
         ]
 
         with patch("urllib.request.urlopen", return_value=self._make_ok_response()):
@@ -1132,9 +1148,7 @@ class TestRunHealthCheckWithSpecVectors:
 
 
 class TestComputeFitnessSpecVectorPassRate:
-    def test_spec_vector_pass_rate_present_when_vectors_in_checks(
-        self, workspace: Path
-    ) -> None:
+    def test_spec_vector_pass_rate_present_when_vectors_in_checks(self, workspace: Path) -> None:
         import test_rig
 
         checks = {
@@ -1151,9 +1165,7 @@ class TestComputeFitnessSpecVectorPassRate:
         assert "spec_vector_pass_rate" in fitness
         assert fitness["spec_vector_pass_rate"] == 0.5
 
-    def test_spec_vector_pass_rate_absent_without_spec_vectors(
-        self, workspace: Path
-    ) -> None:
+    def test_spec_vector_pass_rate_absent_without_spec_vectors(self, workspace: Path) -> None:
         import test_rig
 
         checks = {"health": {"passed": True, "duration_ms": 50}}

@@ -175,6 +175,8 @@ class TestFieldNamingConvention:
         "CAMBRIAN_EXAMINER_MODEL",
         "CAMBRIAN_REDTEAM_MODEL",
         "CAMBRIAN_REDTEAM_THRESHOLD",
+        # Container isolation (§2.12)
+        "CAMBRIAN_OUTPUT_DIR",
         # Nested diagnostic/expect fields (dotted paths in table rows)
         "body_contains",
         "body_has_keys",

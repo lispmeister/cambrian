@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import shutil
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -284,6 +285,9 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     docker = aiodocker.Docker()
     container: Any = None
+    # Isolated output directory for the viability report. Separate from the artifact
+    # workspace so the organism's code cannot predict or overwrite the report path.
+    output_dir = Path(tempfile.mkdtemp(prefix="cambrian-output-"))
     try:
         # Build env list: required vars always set; optional vars threaded through
         # from the supervisor's own environment only if explicitly set there.
@@ -310,7 +314,12 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             "Image": DOCKER_IMAGE,
             "Env": env_list,
             "HostConfig": {
-                "Binds": [f"{artifact_path.resolve()}:/workspace:rw"],
+                "Binds": [
+                    f"{artifact_path.resolve()}:/workspace:rw",
+                    # Separate output mount: Test Rig writes report here.
+                    # Organism code runs in /workspace and cannot predict this path.
+                    f"{output_dir.resolve()}:/output:rw",
+                ],
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)
@@ -329,8 +338,8 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             _set_status("idle")
             return
 
-        # Read viability report written by Test Rig into the mounted volume
-        report_path = artifact_path / "viability-report.json"
+        # Read viability report from the isolated output directory
+        report_path = output_dir / "viability-report.json"
         if report_path.exists():
             with report_path.open() as f:
                 viability = json.load(f)
@@ -368,6 +377,8 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
         cache_dirs = (*artifact_path.rglob("__pycache__"), *artifact_path.rglob(".pytest_cache"))
         for cache_dir in cache_dirs:
             shutil.rmtree(cache_dir, ignore_errors=True)
+        # Clean up the isolated output directory.
+        shutil.rmtree(output_dir, ignore_errors=True)
         _set_status("idle")
 
 

@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -21,6 +22,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 WORKSPACE = Path(os.environ.get("CAMBRIAN_WORKSPACE", "/workspace"))
+# Output directory for the viability report — separate from /workspace so the organism
+# (which runs in /workspace) cannot predict or overwrite it.
+OUTPUT_DIR = Path(os.environ.get("CAMBRIAN_OUTPUT_DIR", "/output"))
 HEALTH_TIMEOUT = 10  # seconds per health-check request
 TCP_READINESS_TIMEOUT = 30  # seconds to wait for port
 TCP_POLL_INTERVAL = 0.5
@@ -160,6 +164,26 @@ def _validate_contracts(contracts: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    """SIGTERM the process group, wait 5s, then SIGKILL any survivors.
+
+    Because organism commands run with start_new_session=True, they form their
+    own process group. Killing the group (instead of just proc.pid) ensures any
+    daemonised children spawned by the organism are also reaped.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # process already gone
+
+
 def run_build(entry: dict[str, Any]) -> dict[str, Any]:
     cmd = entry.get("build", "")
     if not cmd:
@@ -174,6 +198,7 @@ def run_build(entry: dict[str, Any]) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=300,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -221,6 +246,7 @@ def run_tests(entry: dict[str, Any]) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=120,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -339,6 +365,7 @@ def start_process(entry: dict[str, Any]) -> tuple[subprocess.Popen[str], dict[st
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     return proc, {"passed": True, "duration_ms": duration_ms}
@@ -428,20 +455,28 @@ def run_health_check(
     contracts: list[dict[str, Any]] | None,
     generation: int,
     manifest: dict[str, Any] | None = None,
+    spec_vectors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run health check — spec vectors first, then manifest contracts, then fallback."""
+    """Run health check — spec vectors first, then manifest contracts, then fallback.
+
+    spec_vectors: pre-read at manifest stage (before organism ran). When provided,
+    the spec file is NOT re-read, so the organism cannot tamper with it to defeat
+    spec-vector evaluation. When None (e.g. unit tests calling directly), falls back
+    to reading from the spec file via manifest.
+    """
     t0 = time.monotonic()
 
-    # --- Extract spec vectors (Layer 1) ---
-    spec_vectors: list[dict[str, Any]] = []
-    if manifest is not None:
+    # --- Resolve spec vectors (Layer 1) ---
+    # Use pre-read vectors if provided; otherwise fall back to reading from disk.
+    if spec_vectors is None and manifest is not None:
         spec_file = _find_spec_file(manifest)
         if spec_file is not None:
             try:
-                spec_text = spec_file.read_text(encoding="utf-8")
-                spec_vectors = _extract_spec_vectors(spec_text)
+                spec_vectors = _extract_spec_vectors(spec_file.read_text(encoding="utf-8"))
             except Exception as e:
                 print(f"[test-rig] Warning: failed to read spec vectors: {e}", flush=True)
+    if spec_vectors is None:
+        spec_vectors = []
 
     # No spec vectors and no contracts → fallback
     if not spec_vectors and not contracts:
@@ -867,6 +902,16 @@ def run_pipeline() -> None:
     checks["manifest"] = {"passed": True, "duration_ms": 0}
     stages_completed.append("manifest")
 
+    # Pre-read spec vectors NOW (before any organism code runs) so the organism
+    # cannot tamper with the spec file to defeat spec-vector evaluation.
+    preread_spec_vectors: list[dict[str, Any]] | None = None
+    spec_file = _find_spec_file(manifest)
+    if spec_file is not None:
+        try:
+            preread_spec_vectors = _extract_spec_vectors(spec_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[test-rig] Warning: failed to pre-read spec vectors: {e}", flush=True)
+
     # -----------------------------------------------------------------------
     # Stage 2: Build
     # -----------------------------------------------------------------------
@@ -955,7 +1000,7 @@ def run_pipeline() -> None:
         else:
             summary = f"port {port} not open after {TCP_READINESS_TIMEOUT}s"
             with _suppress():
-                proc.kill()
+                _kill_process_group(proc)
         _write_report(
             generation=generation,
             failure_stage="start",
@@ -976,18 +1021,15 @@ def run_pipeline() -> None:
     # Stage 5: Health / contracts
     # -----------------------------------------------------------------------
     print(f"[test-rig] Stage: health ({health_url})", flush=True)
-    health_result = run_health_check(health_url, contracts, generation, manifest)
+    health_result = run_health_check(
+        health_url, contracts, generation, manifest, preread_spec_vectors
+    )
     checks["health"] = health_result
     stages_completed.append("health")
 
-    # Terminate the artifact process
+    # Kill the artifact process group — ensures any daemonised children are also reaped
     with _suppress():
-        proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        with _suppress():
-            proc.kill()
+        _kill_process_group(proc)
 
     if not health_result["passed"]:
         error_msg = health_result.get("error", "")
@@ -1058,7 +1100,8 @@ def _write_report(
     }
     if diagnostics:
         report["diagnostics"] = diagnostics
-    report_path = WORKSPACE / "viability-report.json"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT_DIR / "viability-report.json"
     report_path.write_text(json.dumps(report, indent=2))
     print(f"[test-rig] Report written to {report_path}", flush=True)
 

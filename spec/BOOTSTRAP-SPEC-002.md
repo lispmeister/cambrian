@@ -1052,6 +1052,35 @@ Unlike the examiner (which sees only the spec), the red-team sees the actual cod
 | `CAMBRIAN_REDTEAM_MODEL` | MAY | Same as `CAMBRIAN_ESCALATION_MODEL` | LLM model for the red-team. Using the strongest model available maximizes bug-finding capability. |
 | `CAMBRIAN_REDTEAM_THRESHOLD` | MAY | `0.7` | Minimum red-team score. Below this, the offspring's fitness is penalized (the penalty mechanism is defined by the selection policy in M2). |
 
+### 2.12 Container Isolation Hardening
+
+**Applies to all modes (M1+).** The organism's code runs inside the same container as the Test Rig. Under selection pressure in M2, evolved organisms might attempt to cheat by writing a fake viability report or daemonizing child processes that outlive the assessment.
+
+#### Isolated output mount
+
+The viability report MUST be written to a separate bind-mounted directory (`/output`) rather than the artifact workspace (`/workspace`). The Supervisor creates a randomly-named temp directory on the host (e.g. `tmpXXXXXX`) and bind-mounts it at `//output`. Because the mount source path is randomized at runtime, organism code running in `/workspace` cannot predict or target it.
+
+The Test Rig reads `CAMBRIAN_OUTPUT_DIR` (default: `/output`) and writes `viability-report.json` there. The Supervisor reads the report from the same temp dir after the container exits, then removes the temp dir.
+
+**Supervisor bind-mounts (in order):**
+
+| Host path | Container path | Mode | Purpose |
+|-----------|---------------|------|---------|
+| Resolved artifact path (from `CAMBRIAN_ARTIFACTS_ROOT`) | `/workspace` | `rw` | Organism source code + build outputs |
+| Random temp dir (`tempfile.mkdtemp()`) | `/output` | `rw` | Viability report (Test Rig writes here) |
+
+#### Process group isolation
+
+The Test Rig MUST spawn all subprocess commands (build, test, start) with `start_new_session=True`. This places each subprocess in a new POSIX process group. When the Test Rig terminates a subprocess (timeout, cleanup), it kills the entire process group via `os.killpg(os.getpgid(proc.pid), signal.SIGTERM)`, followed by `SIGKILL` after a 5-second grace period.
+
+This ensures daemonized children that detach from the parent process (e.g., `subprocess.Popen(daemon=True)` or double-fork) are still reaped when the Test Rig terminates the group.
+
+#### Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_OUTPUT_DIR` | MAY | `/output` | Directory where the Test Rig writes `viability-report.json`. MUST be on the isolated output mount, not `/workspace`. |
+
 ## 3. Docker Infrastructure
 
 ### 3.1 Base Image
@@ -1116,7 +1145,10 @@ config = {
         "CAMBRIAN_SUPERVISOR_URL=http://host.docker.internal:8400",
     ],
     "HostConfig": {
-        "Binds": ["/path/to/artifact:/workspace:rw"],
+        "Binds": [
+            "/path/to/artifact:/workspace:rw",
+            "/tmp/cambrian-output-XXXXXX:/output:rw",  # randomized temp dir
+        ],
     },
 }
 container = await client.containers.create_or_replace(name="lab-gen-N", config=config)
@@ -1124,12 +1156,13 @@ container = await client.containers.create_or_replace(name="lab-gen-N", config=c
 
 The Supervisor reads `ANTHROPIC_API_KEY` from its own environment and passes it via the `Env` config. The key is never written to disk inside the container, never committed to git, never included in artifacts.
 
-### 3.4 Workspace Mount
+### 3.4 Workspace and Output Mounts
 
-The artifact directory is bind-mounted at `/workspace`:
+Two directories are bind-mounted into every container:
 
-- Read-write: the Test Rig writes `viability-report.json` back to this directory.
-- The Supervisor reads the report from the host-side path after the container exits.
+**`/workspace`** — the artifact directory. Read-write. The Test Rig installs dependencies and runs tests here. Organism code runs from this directory.
+
+**`/output`** — isolated report directory. The host-side path is a randomly-named temp directory (`tempfile.mkdtemp(prefix="cambrian-output-")`). The Test Rig writes `viability-report.json` here. The Supervisor reads the report from the host-side temp dir after the container exits, then removes it. Organism code in `/workspace` cannot predict or target the `/output` mount source (see §2.12).
 
 ### 3.5 File Layout
 

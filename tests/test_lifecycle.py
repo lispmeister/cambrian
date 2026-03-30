@@ -318,11 +318,16 @@ class TestSpawnTestPromoteLifecycle:
             },
             "completed_at": "2026-03-30T00:01:00Z",
         }
-        (artifact_path / "viability-report.json").write_text(json.dumps(viability))
+        # The supervisor writes the report to an isolated output dir (separate from
+        # the artifact workspace). Seed that dir with the viability report.
+        output_dir = artifacts_root / "output-gen-1"
+        output_dir.mkdir()
+        (output_dir / "viability-report.json").write_text(json.dumps(viability))
 
         mock_docker_cls, _ = _make_mock_docker()
-        with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
-            await sup.run_test_rig(1, artifact_path, "lab-gen-1")
+        with patch("supervisor.supervisor.tempfile.mkdtemp", return_value=str(output_dir)):
+            with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+                await sup.run_test_rig(1, artifact_path, "lab-gen-1")
 
         rec = generations.get(1)
         assert rec["outcome"] == "tested"
