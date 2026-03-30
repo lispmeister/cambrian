@@ -166,6 +166,15 @@ class TestFieldNamingConvention:
         "fitness_trend",
         "failure_distribution",
         "stages_completed_distribution",
+        # Verification layer fitness metrics (internal to test rig)
+        "spec_vector_pass_rate",
+        "examiner_pass_rate",
+        "redteam_score",
+        "redteam_violations",
+        # Verification layer environment variables
+        "CAMBRIAN_EXAMINER_MODEL",
+        "CAMBRIAN_REDTEAM_MODEL",
+        "CAMBRIAN_REDTEAM_THRESHOLD",
         # Nested diagnostic/expect fields (dotted paths in table rows)
         "body_contains",
         "body_has_keys",

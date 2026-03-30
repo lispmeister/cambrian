@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.8.5
+version: 0.9.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -852,6 +852,206 @@ The fitness object MUST include a `stages_completed` field: an array of stage na
 
 **M2+ usage:** Selection policies will consume the fitness vector to choose between viable organisms. The specific selection criteria (minimize `total_duration_ms`, maximize `test_count`, Pareto-optimal across dimensions, etc.) are deferred. The measurement apparatus is defined here so historical data exists from Gen-1 onward.
 
+### 2.9 Spec-Derived Verification (Layer 1)
+
+The Test Rig extracts machine-readable acceptance vectors from the spec file and evaluates them during the health stage. This provides unforgeable verification — the vectors live in a FROZEN block that the offspring cannot modify (see CAMBRIAN-SPEC-005 § Verification Layers).
+
+**Why this matters:** In the existing design, the offspring controls its own manifest contracts. A dishonest offspring could declare trivial contracts (`GET /health → 200`) and omit hard ones (`GET /stats` schema validation). Spec vectors are the antidote — they are defined by the spec author, not the offspring, and they cannot be modified by FROZEN-block enforcement.
+
+#### Spec Vector Extraction
+
+The Test Rig reads the spec file from `/workspace`. The spec file path is determined by:
+
+1. If the manifest has a `files` array entry ending in `CAMBRIAN-SPEC-005.md`, use that path.
+2. Otherwise, glob `/workspace/**/CAMBRIAN-SPEC-005.md` and use the first match.
+3. If no spec file is found, skip spec-vector evaluation (backward-compatible with hand-crafted test artifacts that may not include a spec).
+
+**Parsing algorithm:**
+
+1. Read the spec file as UTF-8 text.
+2. Find the region between `<!-- BEGIN FROZEN: acceptance-vectors -->` and `<!-- END FROZEN: acceptance-vectors -->`.
+3. Extract all fenced code blocks with the `spec-vector` info string within that region.
+4. Parse each code block as YAML. Each YAML document produces one spec vector.
+5. Validate each vector against the contract schema (same rules as manifest contracts, see § 2.5).
+
+If the FROZEN markers are not found, the spec has no acceptance vectors — the Test Rig logs a warning and proceeds without them. This makes the feature backward-compatible.
+
+#### Evaluation
+
+Spec vectors are evaluated BEFORE manifest contracts, during the health stage:
+
+```
+Health stage:
+  1. Evaluate spec vectors (from FROZEN block in spec file)
+  2. Evaluate manifest contracts (from manifest.json)
+  3. If no spec vectors AND no manifest contracts → fallback health check
+```
+
+Spec vectors use the same evaluation rules as manifest contracts: `$GENERATION` substitution, 10-second timeout per vector, no short-circuit. All vectors are evaluated regardless of individual pass/fail.
+
+If ANY spec vector fails, the health stage fails — even if all manifest contracts pass. Spec vectors are the floor; manifest contracts are the ceiling.
+
+#### Viability Report Extension
+
+When spec vectors are evaluated, their results appear in the viability report:
+
+```json
+{
+  "checks": {
+    "health": {
+      "passed": false,
+      "duration_ms": 120,
+      "spec-vectors": {
+        "sv-health-liveness": {"passed": true, "duration_ms": 8},
+        "sv-health-body": {"passed": true, "duration_ms": 10},
+        "sv-stats-schema": {"passed": false, "duration_ms": 12, "error": "missing key: uptime"}
+      },
+      "contracts": {
+        "health-liveness": {"passed": true, "duration_ms": 9}
+      }
+    }
+  }
+}
+```
+
+The `spec-vectors` sub-object is parallel to the existing `contracts` sub-object. Each entry has the same schema: `{passed, duration_ms, error?}`.
+
+When spec vectors are absent (no FROZEN block in spec), the `spec-vectors` sub-object is omitted. Existing report consumers are unaffected.
+
+#### Fitness Extension
+
+The fitness vector gains a new metric:
+
+| Metric | Source | Computation |
+|--------|--------|-------------|
+| `spec_vector_pass_rate` | `checks.health.spec-vectors` | Passed vectors / total vectors. **Absent** if no spec vectors evaluated. |
+
+This metric is independent of `contract_pass_rate` (which measures manifest contracts). In M2, `spec_vector_pass_rate` is a stronger fitness signal because spec vectors are not under the offspring's control.
+
+### 2.10 Dual-Blind Examiner (Layer 2, M2)
+
+**This section activates when `CAMBRIAN_MODE=m2` is set.** It has no effect in M1.
+
+The dual-blind examiner is an independent LLM call that generates test cases from the spec alone, without seeing the offspring's code. The Supervisor orchestrates this after the Test Rig container exits. The examiner and the code author share only the spec — they have no channel to collude.
+
+#### Design
+
+```
+┌─────────┐     spec      ┌──────────┐
+│  Prime   │◄────────────►│   Spec   │
+│ (LLM-A)  │              │  (genome) │
+│ generates │              └──────┬───┘
+│  code    │                     │
+└─────────┘                      │ spec (same document)
+                                 ▼
+                          ┌──────────┐
+                          │ Examiner │
+                          │ (LLM-B)  │
+                          │ generates │
+                          │  tests   │
+                          └──────────┘
+```
+
+**Key property:** LLM-A (code author) and LLM-B (test author) never see each other's output. They share only the spec. If LLM-A writes code that passes LLM-B's tests, the code satisfies an independent reading of the spec.
+
+#### Orchestration
+
+The Supervisor runs the examiner as a post-verification step after the Test Rig container exits and before updating the generation record to `tested`:
+
+1. **Test Rig completes.** Viability report exists.
+2. **If Tier >= 1:** The Supervisor calls an LLM (model: `CAMBRIAN_EXAMINER_MODEL`, default: same as `CAMBRIAN_MODEL`) with the prompt:
+
+   > System: You are a test examiner. Given a specification, generate HTTP contract test cases that a correct implementation MUST pass. Output ONLY a JSON array of contract objects (same schema as manifest contracts). Generate at least 5 test cases covering different requirements from the spec.
+   >
+   > User: [spec file content]
+
+3. **Parse response** as a JSON array of contract objects.
+4. **Run the examiner's contracts** against the still-running offspring process (if it's still up from the Test Rig's health stage — see implementation note below) or by restarting it.
+5. **Record results** in the generation record under `examiner-results`:
+
+```json
+{
+  "examiner-results": {
+    "model": "claude-sonnet-4-6",
+    "contracts-generated": 7,
+    "contracts-passed": 5,
+    "contracts-failed": 2,
+    "failures": [
+      {"name": "exam-missing-error-format", "error": "status 200 != expected 400"}
+    ],
+    "pass-rate": 0.714
+  }
+}
+```
+
+**Implementation note:** The Test Rig kills the offspring process after the health stage. For the examiner, the Supervisor has two options: (a) modify the Test Rig to leave the process running when Tier >= 1 (requires a new env var `CAMBRIAN_KEEP_PROCESS=1`), or (b) restart the offspring in a new container using the same artifact. Option (b) is simpler and more robust — it doesn't couple the Test Rig to the verification layer system.
+
+#### Fitness Extension
+
+| Metric | Source | Computation |
+|--------|--------|-------------|
+| `examiner_pass_rate` | `examiner-results` | Passed / generated. **Absent** if examiner not run (M1 or Tier 0). |
+
+#### Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_EXAMINER_MODEL` | MAY | Same as `CAMBRIAN_MODEL` | LLM model for the examiner. Using a different model than Prime reduces the chance of correlated blind spots. |
+
+### 2.11 Adversarial Red-Team (Layer 3, M2)
+
+**This section activates when `CAMBRIAN_MODE=m2` is set AND Tier >= 2.** It has no effect in M1 or Tier 0/1.
+
+The adversarial red-team is an independent LLM call that receives both the spec AND the offspring's source code. Its goal is to find violations — spec non-compliance, edge case failures, error handling gaps. It produces failing test cases. If any test case reveals a real bug (the offspring fails the test), the fitness score is penalized.
+
+#### Design
+
+Unlike the examiner (which sees only the spec), the red-team sees the actual code. This is strictly more powerful — it can find implementation-specific bugs that a spec-only reader would miss. But it's also more expensive (larger prompt) and only valuable once the offspring consistently passes spec-level verification (Tier 2+).
+
+#### Orchestration
+
+1. **Examiner completes** (if applicable).
+2. **If Tier >= 2:** The Supervisor calls an LLM (model: `CAMBRIAN_REDTEAM_MODEL`, default: same as `CAMBRIAN_ESCALATION_MODEL`) with the prompt:
+
+   > System: You are a security and correctness auditor. Given a specification and its implementation, find violations: places where the code doesn't match the spec, handles edge cases incorrectly, or could fail under realistic conditions. For each violation, produce an HTTP contract test case that demonstrates the bug. Output ONLY a JSON array of contract objects.
+   >
+   > User: [spec file content] + [all source files from the artifact]
+
+3. **Run the red-team's contracts** against the offspring (same restart-in-new-container approach as the examiner).
+4. **Record results** in the generation record under `redteam-results`:
+
+```json
+{
+  "redteam-results": {
+    "model": "claude-opus-4-6",
+    "contracts-generated": 10,
+    "contracts-passed": 3,
+    "contracts-failed": 7,
+    "violations-confirmed": 2,
+    "violations": [
+      {"name": "rt-missing-error-body", "description": "POST /spawn with empty body returns 500 instead of 400", "severity": "medium"}
+    ],
+    "score": 0.8
+  }
+}
+```
+
+**Scoring:** `violations-confirmed` counts red-team test cases where the offspring actually failed (the bug is real, not a false positive from the red-team). `score = 1.0 - (violations_confirmed / contracts_generated)`. A score of 1.0 means the red-team found no real bugs. A score below `CAMBRIAN_REDTEAM_THRESHOLD` (default 0.7) penalizes the offspring's fitness.
+
+#### Fitness Extension
+
+| Metric | Source | Computation |
+|--------|--------|-------------|
+| `redteam_score` | `redteam-results.score` | 1.0 - (violations / generated). **Absent** if red-team not run. |
+| `redteam_violations` | `redteam-results.violations-confirmed` | Integer count. **Absent** if red-team not run. |
+
+#### Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_REDTEAM_MODEL` | MAY | Same as `CAMBRIAN_ESCALATION_MODEL` | LLM model for the red-team. Using the strongest model available maximizes bug-finding capability. |
+| `CAMBRIAN_REDTEAM_THRESHOLD` | MAY | `0.7` | Minimum red-team score. Below this, the offspring's fitness is penalized (the penalty mechanism is defined by the selection policy in M2). |
+
 ## 3. Docker Infrastructure
 
 ### 3.1 Base Image
@@ -1394,7 +1594,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.8.5"
+version: "0.9.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

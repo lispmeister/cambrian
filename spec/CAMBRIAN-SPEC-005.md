@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.12.0
+version: 0.13.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -598,6 +598,133 @@ Gen-2     → Gen-3 echo server (Minimal Spec) ← operationality proof
 
 The chain terminates at Gen-3 because the Minimal Spec does not produce a Prime.
 
+## Verification Layers
+
+A generation controls its own code, including its own tests. Without independent verification, an offspring could "cheat" — writing trivial tests that pass but don't verify the spec's actual requirements. This section defines three verification layers, each catching what the others miss. Together they ensure that fitness is measured against the spec, not against self-generated criteria.
+
+**Threat model:** The entity being evaluated (the offspring) controls its source code, test suite, and manifest contracts. It does NOT control: the spec (FROZEN blocks are byte-for-byte immutable), the Test Rig (baked into the Docker image), or the Supervisor (runs on the host). The verification layers exploit this trust boundary.
+
+### Layer 0 — Self-Tests (existing, gameable)
+
+The offspring's own test suite, run by `entry.test` during the Test Rig's test stage. This is useful for internal correctness — a well-written test suite catches implementation bugs. But it is the weakest verification signal because the offspring controls both the tests and the code under test.
+
+**What it catches:** Internal bugs, regressions within the offspring's own logic.
+**What it misses:** Spec violations, shallow tests, tautological assertions.
+
+### Layer 1 — Spec Acceptance Vectors (FROZEN, mechanical, no LLM)
+
+Machine-readable test vectors embedded in the spec inside a FROZEN block. The Test Rig reads them directly from the spec file in `/workspace` and evaluates them during the health stage, alongside any manifest-defined contracts. Because the vectors live in a FROZEN block, the offspring cannot modify them — they are part of the immutable genome.
+
+**What it catches:** Spec contract violations, API schema drift, missing endpoints.
+**What it misses:** Behavioral correctness beyond the declared vectors, edge cases not anticipated by the spec author.
+
+The vectors are defined below in the [Acceptance Vectors](#acceptance-vectors) section. The Test Rig implementation is specified in BOOTSTRAP-SPEC-002 § 2.9.
+
+### Layer 2 — Dual-Blind Examiner (LLM, independent, M2)
+
+An independent LLM generates test cases from the spec alone, without seeing the offspring's code. The Supervisor orchestrates this as a separate step after the Test Rig completes. The examiner and the code author share only the spec — they have no channel to collude.
+
+**What it catches:** Shallow self-tests (the examiner tests spec requirements the offspring chose not to test), tautological assertions (the examiner derives expectations from the spec, not from the code).
+**What it misses:** Implementation-specific edge cases that require reading the code.
+
+**Activation:** M2 only (`CAMBRIAN_MODE=m2`). Specified in BOOTSTRAP-SPEC-002 § 2.10.
+
+### Layer 3 — Adversarial Red-Team (LLM, hostile, M2)
+
+An independent LLM receives the spec AND the offspring's source code with the instruction: "find violations — places where the code doesn't match the spec, handles edge cases incorrectly, or could fail under realistic conditions." It produces failing test cases. If any pass (i.e., the test case reveals a real bug), the offspring's fitness is penalized.
+
+**What it catches:** Semantic mismatches between spec and code, edge cases, error handling gaps.
+**What it misses:** Nothing systematically — this is the most powerful layer, but also the most expensive (additional LLM call per generation).
+
+**Activation:** M2 only (`CAMBRIAN_MODE=m2`). Specified in BOOTSTRAP-SPEC-002 § 2.11.
+
+### Verification Matrix
+
+| Layer | Trust | LLM? | Cost | Catches | Activation |
+|-------|-------|------|------|---------|------------|
+| 0: Self-Tests | Offspring controls | No | Zero | Internal bugs | Always (M1) |
+| 1: Spec Vectors | FROZEN in spec | No | Zero | Contract violations | Always (M1) |
+| 2: Dual-Blind | Independent LLM | Yes | ~1 call | Shallow self-tests | M2 |
+| 3: Red-Team | Independent LLM | Yes | ~1 call | Semantic mismatches | M2 |
+
+**Composition:** Layer 0 runs during the `test` stage. Layers 1 runs during the `health` stage (as spec-derived contracts). Layers 2 and 3 run as Supervisor-orchestrated post-verification steps in M2, after the Test Rig container exits. A generation must pass ALL active layers to be considered viable.
+
+### Acceptance Vectors
+
+<!-- BEGIN FROZEN: acceptance-vectors -->
+
+The following test vectors are machine-readable acceptance criteria. The Test Rig reads this section from the spec file and evaluates each vector during the health stage. The offspring cannot modify this block — it is FROZEN.
+
+**Format:** Each vector is a YAML document in a fenced code block. The Test Rig extracts all `spec-vector` code blocks from between the FROZEN markers. Each vector has:
+- `name`: unique identifier (used in viability report)
+- `type`: `http` (same contract types as manifest contracts)
+- `method`, `path`, `expect`: same schema as manifest contracts (see BOOTSTRAP-SPEC-002 § 2.5)
+
+```spec-vector
+name: sv-health-liveness
+type: http
+method: GET
+path: /health
+expect:
+  status: 200
+```
+
+```spec-vector
+name: sv-health-body
+type: http
+method: GET
+path: /health
+expect:
+  status: 200
+  body:
+    ok: true
+```
+
+```spec-vector
+name: sv-stats-schema
+type: http
+method: GET
+path: /stats
+expect:
+  status: 200
+  body_has_keys:
+    - generation
+    - status
+    - uptime
+```
+
+```spec-vector
+name: sv-stats-generation
+type: http
+method: GET
+path: /stats
+expect:
+  status: 200
+  body_contains:
+    generation: "$GENERATION"
+```
+
+```spec-vector
+name: sv-stats-status-is-string
+type: http
+method: GET
+path: /stats
+expect:
+  status: 200
+  body_has_keys:
+    - status
+```
+
+<!-- END FROZEN: acceptance-vectors -->
+
+**Spec vector rules:**
+
+- Spec vectors are evaluated BEFORE manifest contracts. If any spec vector fails, the health stage fails regardless of manifest contract results.
+- Spec vectors use the same evaluation rules as manifest contracts (see BOOTSTRAP-SPEC-002 § 2.5): `$GENERATION` substitution, 10-second timeout per vector, no short-circuit (all vectors evaluated).
+- Spec vector results appear in the viability report under `checks.health.spec-vectors`, parallel to `checks.health.contracts`.
+- A spec without an `acceptance-vectors` FROZEN block has no spec vectors — the Test Rig skips this step. This makes the feature backward-compatible with specs that predate it.
+- The Minimal Spec (used for M1 operationality testing) MAY define its own acceptance vectors appropriate to its simpler contract (e.g., echo server health check).
+
 ## Examples
 
 ### Happy path: Gen-1 reproduces to Gen-2
@@ -719,12 +846,12 @@ The Test Rig evaluates against progressively harder tiers. Each tier activates w
 
 | Tier | Requirement | Activation |
 |------|-------------|------------|
-| 0 | Basic viability: build, test, start, health pass | Always active (M1) |
-| 1 | Behavioral contracts declared in spec pass | Tier 0 viability > 80% for 3 campaigns |
-| 2 | Robustness: concurrent requests (10 simultaneous), malformed input returns 400, process survives SIGHUP | Tier 1 > 80% for 3 campaigns |
+| 0 | Basic viability: build, test, start, health pass. Includes spec acceptance vectors (§ Verification Layers, Layer 1). | Always active (M1) |
+| 1 | Behavioral contracts + dual-blind examiner (Layer 2) finds no spec violations. | Tier 0 viability > 80% for 3 campaigns |
+| 2 | Robustness checks + adversarial red-team (Layer 3) score above threshold. | Tier 1 > 80% for 3 campaigns |
 | 3 | Performance: p99 latency < 100ms, throughput > 1000 req/s for 10s, RSS < 50MB | Tier 2 > 80% for 3 campaigns |
 
-The tier system adds checks **within** the health stage — the pipeline structure (build → test → start → health → report) is unchanged. Current tier is tracked in the archive alongside the viability rate.
+The tier system adds checks **within** the health stage — the pipeline structure (build → test → start → health → report) is unchanged. Current tier is tracked in the archive alongside the viability rate. Verification Layers 2 and 3 (§ Verification Layers) are Supervisor-orchestrated post-verification steps that activate at Tier 1 and Tier 2 respectively — see BOOTSTRAP-SPEC-002 §§ 2.10–2.11.
 
 **Why tiers:** Without progressive difficulty, a spec optimized for the echo server task will overfit. Tiers act as a Red Queen — the fitness landscape grows harder as the population improves. A spec that thrives at Tier 0 must prove itself at Tier 1 before it can dominate the archive.
 
@@ -732,7 +859,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.12.0"
+version: "0.13.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
