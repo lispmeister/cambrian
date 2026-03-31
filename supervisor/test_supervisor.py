@@ -546,3 +546,145 @@ async def test_run_test_rig_cleans_up_cache_dirs(artifacts_root: Path) -> None:
 
     assert not pycache.exists(), "__pycache__ should be removed"
     assert not pytest_cache.exists(), ".pytest_cache should be removed"
+
+
+# ---------------------------------------------------------------------------
+# Campaign runner tests
+# ---------------------------------------------------------------------------
+
+
+def _make_record(generation: int, viable: bool, failure_stage: str = "none", fitness: dict | None = None) -> dict:
+    """Build a minimal generation record for campaign tests."""
+    return {
+        "generation": generation,
+        "outcome": "promoted" if viable else "failed",
+        "viability": {
+            "status": "viable" if viable else "non-viable",
+            "failure_stage": failure_stage,
+            "fitness": fitness or {"stages_completed": ["manifest", "build", "test", "start", "health"]},
+        },
+    }
+
+
+class TestComputeCampaignSummary:
+    def test_empty_records(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        summary = compute_campaign_summary([])
+        assert summary["viability_rate"] == 0.0
+        assert summary["generation_count"] == 0
+        assert summary["fitness_mean"] == {}
+
+    def test_all_viable(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        records = [_make_record(i, viable=True) for i in range(1, 6)]
+        summary = compute_campaign_summary(records)
+        assert summary["viability_rate"] == 1.0
+        assert summary["generation_count"] == 5
+        assert summary["failure_distribution"] == {"none": 5}
+
+    def test_all_non_viable(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        records = [_make_record(i, viable=False, failure_stage="build") for i in range(1, 4)]
+        summary = compute_campaign_summary(records)
+        assert summary["viability_rate"] == 0.0
+        assert summary["failure_distribution"] == {"build": 3}
+
+    def test_mixed_viability_rate(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        records = [
+            _make_record(1, viable=True),
+            _make_record(2, viable=False, failure_stage="test"),
+            _make_record(3, viable=True),
+            _make_record(4, viable=False, failure_stage="build"),
+        ]
+        summary = compute_campaign_summary(records)
+        assert summary["viability_rate"] == pytest.approx(0.5, rel=1e-4)
+        assert summary["failure_distribution"] == {"none": 2, "test": 1, "build": 1}
+
+    def test_fitness_mean_computed(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        records = [
+            _make_record(1, viable=True, fitness={"total_duration_ms": 1000, "test_count": 5, "stages_completed": []}),
+            _make_record(2, viable=True, fitness={"total_duration_ms": 2000, "test_count": 3, "stages_completed": []}),
+        ]
+        summary = compute_campaign_summary(records)
+        assert summary["fitness_mean"]["total_duration_ms"] == pytest.approx(1500.0, rel=1e-4)
+        assert summary["fitness_mean"]["test_count"] == pytest.approx(4.0, rel=1e-4)
+
+    def test_fitness_trend_positive(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        # Improving: [0, 0, 1, 1, 1] — slope should be positive
+        records = [
+            _make_record(1, viable=False),
+            _make_record(2, viable=False),
+            _make_record(3, viable=True),
+            _make_record(4, viable=True),
+            _make_record(5, viable=True),
+        ]
+        summary = compute_campaign_summary(records)
+        assert summary["fitness_trend"] > 0
+
+    def test_fitness_trend_negative(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        # Declining: [1, 1, 0, 0, 0]
+        records = [
+            _make_record(1, viable=True),
+            _make_record(2, viable=True),
+            _make_record(3, viable=False),
+            _make_record(4, viable=False),
+            _make_record(5, viable=False),
+        ]
+        summary = compute_campaign_summary(records)
+        assert summary["fitness_trend"] < 0
+
+    def test_fitness_trend_flat_constant(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        # Constant viability (all non-viable) → slope must be exactly 0.0
+        records = [_make_record(i, viable=False) for i in range(1, 6)]
+        summary = compute_campaign_summary(records)
+        assert summary["fitness_trend"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_stages_completed_distribution(self) -> None:
+        from supervisor.campaign import compute_campaign_summary
+
+        records = [
+            _make_record(1, viable=True, fitness={"stages_completed": ["manifest", "build", "test", "start", "health"]}),
+            _make_record(2, viable=False, failure_stage="build", fitness={"stages_completed": ["manifest", "build"]}),
+            _make_record(3, viable=False, failure_stage="test", fitness={"stages_completed": ["manifest", "build", "test"]}),
+        ]
+        summary = compute_campaign_summary(records)
+        dist = summary["stages_completed_distribution"]
+        assert dist["health"] == 1
+        assert dist["build"] == 1
+        assert dist["test"] == 1
+
+
+class TestLinearSlope:
+    def test_slope_of_constant_is_zero(self) -> None:
+        from supervisor.campaign import _linear_slope
+
+        assert _linear_slope([1, 1, 1, 1]) == pytest.approx(0.0, abs=1e-9)
+
+    def test_slope_of_increasing(self) -> None:
+        from supervisor.campaign import _linear_slope
+
+        # [0, 1, 2, 3] — perfect slope of 1.0
+        assert _linear_slope([0, 1, 2, 3]) == pytest.approx(1.0, rel=1e-6)
+
+    def test_slope_of_single_value(self) -> None:
+        from supervisor.campaign import _linear_slope
+
+        assert _linear_slope([42]) == 0.0
+
+    def test_slope_of_empty(self) -> None:
+        from supervisor.campaign import _linear_slope
+
+        assert _linear_slope([]) == 0.0
