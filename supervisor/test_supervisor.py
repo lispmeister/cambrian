@@ -1255,3 +1255,260 @@ class TestMiniCampaignScreener:
             await screen_mutation(Path("/tmp/spec.md"), n=2)
 
         assert captured.get("n") == 2
+
+
+# ---------------------------------------------------------------------------
+# Entanglement monitor tests
+# ---------------------------------------------------------------------------
+
+
+class TestEntanglementMonitor:
+    def _make_diff(self, sections_changed: list[str], sections_unchanged: list[str]):
+        from supervisor.spec_diff import SectionChange, SpecDiff
+
+        changed = [
+            SectionChange(section_name=s, lines_added=1, lines_removed=0, is_frozen=False)
+            for s in sections_changed
+        ]
+        return SpecDiff(
+            parent_hash="aaa",
+            child_hash="bbb",
+            sections_changed=changed,
+            sections_unchanged=sections_unchanged,
+            total_lines_added=1,
+            total_lines_removed=0,
+            unified_diff="",
+        )
+
+    def test_empty_diffs_returns_zero_report(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        report = compute_entanglement_report([])
+        assert report.mutation_count == 0
+        assert report.entanglement_trend == 0.0
+        assert report.is_entangling is False
+
+    def test_single_section_per_mutation_is_not_entangling(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        diffs = [
+            self._make_diff(["A"], ["B", "C"]),
+            self._make_diff(["B"], ["A", "C"]),
+            self._make_diff(["C"], ["A", "B"]),
+        ]
+        report = compute_entanglement_report(diffs)
+        assert report.mean_sections_per_mutation == 1.0
+        assert report.is_entangling is False
+
+    def test_rising_section_count_triggers_alert(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        # Each mutation touches progressively more sections
+        diffs = [
+            self._make_diff(["A"], ["B", "C", "D", "E"]),
+            self._make_diff(["A", "B"], ["C", "D", "E"]),
+            self._make_diff(["A", "B", "C"], ["D", "E"]),
+            self._make_diff(["A", "B", "C", "D"], ["E"]),
+            self._make_diff(["A", "B", "C", "D", "E"], []),
+        ]
+        report = compute_entanglement_report(diffs)
+        assert report.is_entangling is True
+        assert report.entanglement_trend > 0.0
+
+    def test_independence_score_perfect_for_solo_mutations(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        diffs = [
+            self._make_diff(["X"], ["Y"]),
+            self._make_diff(["X"], ["Y"]),
+        ]
+        report = compute_entanglement_report(diffs)
+        x_score = next(s for s in report.section_scores if s.section_name == "X")
+        assert x_score.independence_score == 1.0
+        assert x_score.mutations_touching == 2
+        assert x_score.mutations_touching_alone == 2
+
+    def test_independence_score_zero_for_always_coupled(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        diffs = [
+            self._make_diff(["A", "B"], []),
+            self._make_diff(["A", "B"], []),
+        ]
+        report = compute_entanglement_report(diffs)
+        a_score = next(s for s in report.section_scores if s.section_name == "A")
+        assert a_score.independence_score == 0.0
+
+    def test_entanglement_alert_returns_none_when_stable(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report, entanglement_alert
+
+        diffs = [self._make_diff(["A"], ["B"]) for _ in range(5)]
+        report = compute_entanglement_report(diffs)
+        assert entanglement_alert(report) is None
+
+    def test_entanglement_alert_returns_string_when_rising(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report, entanglement_alert
+
+        diffs = [
+            self._make_diff(["A"], ["B", "C", "D", "E"]),
+            self._make_diff(["A", "B"], ["C", "D", "E"]),
+            self._make_diff(["A", "B", "C"], ["D", "E"]),
+            self._make_diff(["A", "B", "C", "D"], ["E"]),
+            self._make_diff(["A", "B", "C", "D", "E"], []),
+        ]
+        report = compute_entanglement_report(diffs)
+        alert = entanglement_alert(report)
+        assert alert is not None
+        assert "Entanglement rising" in alert
+
+    def test_cross_ref_matrix_populated_from_spec(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        spec = """\
+## Alpha
+References Beta here.
+
+## Beta
+No cross references.
+"""
+        diffs = [self._make_diff(["Alpha"], ["Beta"])]
+        report = compute_entanglement_report(diffs, spec_text=spec)
+        # Alpha references Beta — should appear in matrix
+        assert "Beta" in report.cross_ref_matrix.get("Alpha", [])
+
+    def test_section_scores_ordered_alphabetically(self) -> None:
+        from supervisor.entanglement import compute_entanglement_report
+
+        diffs = [self._make_diff(["C", "A", "B"], [])]
+        report = compute_entanglement_report(diffs)
+        names = [s.section_name for s in report.section_scores]
+        assert names == sorted(names)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive test generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveTests:
+    def test_load_tests_returns_empty_when_file_absent(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import load_tests
+
+        result = load_tests(str(tmp_path))
+        assert result == []
+
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import load_tests, save_tests
+
+        tests = [{"test_id": "adaptive-0-0", "test_code": "def test_x(): pass"}]
+        save_tests(tests, str(tmp_path))
+        loaded = load_tests(str(tmp_path))
+        assert loaded == tests
+
+    def test_get_active_tests_filters_expired(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import get_active_tests, save_tests
+
+        tests = [
+            {"test_id": "t0", "created_at_campaign": 0, "expires_after": 5},  # expires at 5
+            {"test_id": "t1", "created_at_campaign": 0, "expires_after": 2},  # expires at 2
+        ]
+        save_tests(tests, str(tmp_path))
+
+        active = get_active_tests(campaign_index=3, artifacts_root=str(tmp_path))
+        assert len(active) == 1
+        assert active[0]["test_id"] == "t0"
+
+    def test_get_active_tests_newest_first(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import get_active_tests, save_tests
+
+        tests = [
+            {"test_id": "old", "created_at_campaign": 0, "expires_after": 10},
+            {"test_id": "new", "created_at_campaign": 5, "expires_after": 10},
+        ]
+        save_tests(tests, str(tmp_path))
+
+        active = get_active_tests(campaign_index=6, artifacts_root=str(tmp_path))
+        assert active[0]["test_id"] == "new"
+
+    def test_expire_old_tests_removes_expired(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import expire_old_tests, load_tests, save_tests
+
+        tests = [
+            {"test_id": "keep", "created_at_campaign": 5, "expires_after": 5},
+            {"test_id": "drop", "created_at_campaign": 0, "expires_after": 3},
+        ]
+        save_tests(tests, str(tmp_path))
+
+        removed = expire_old_tests(campaign_index=4, artifacts_root=str(tmp_path))
+        assert removed == 1
+        remaining = load_tests(str(tmp_path))
+        assert len(remaining) == 1
+        assert remaining[0]["test_id"] == "keep"
+
+    def test_extract_test_cases_splits_on_def_test(self) -> None:
+        from supervisor.adaptive_tests import _extract_test_cases
+
+        text = """\
+def test_alpha():
+    assert 1 == 1
+
+def test_beta():
+    import os
+    assert os.path.exists("/")
+"""
+        cases = _extract_test_cases(text)
+        assert len(cases) == 2
+        assert cases[0].startswith("def test_alpha")
+        assert cases[1].startswith("def test_beta")
+
+    def test_extract_test_cases_strips_markdown_fence(self) -> None:
+        from supervisor.adaptive_tests import _extract_test_cases
+
+        text = "```python\ndef test_wrapped():\n    assert True\n```"
+        cases = _extract_test_cases(text)
+        assert len(cases) == 1
+        assert cases[0].startswith("def test_wrapped")
+
+    @pytest.mark.asyncio
+    async def test_generate_skips_fully_viable_campaign(self, tmp_path: Path) -> None:
+        from supervisor.adaptive_tests import generate_adaptive_tests
+
+        summary = {"viability_rate": 1.0, "failure_distribution": {"none": 5}}
+        result = await generate_adaptive_tests(summary, "spec text", 0, str(tmp_path))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_generate_calls_api_on_failure(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from supervisor.adaptive_tests import generate_adaptive_tests
+
+        summary = {
+            "viability_rate": 0.5,
+            "failure_distribution": {"build": 3, "none": 2},
+            "campaign_id": "test-campaign",
+        }
+
+        fake_content = MagicMock()
+        fake_content.text = (
+            "def test_requirements_present():\n"
+            "    from pathlib import Path\n"
+            "    assert Path('requirements.txt').exists()\n"
+            "\n"
+            "def test_no_syntax_errors():\n"
+            "    import py_compile\n"
+            "    py_compile.compile('app.py')\n"
+        )
+        fake_response = MagicMock()
+        fake_response.content = [fake_content]
+
+        mock_create = AsyncMock(return_value=fake_response)
+        with patch("anthropic.AsyncAnthropic") as mock_client_cls:
+            mock_client_cls.return_value.messages.create = mock_create
+            result = await generate_adaptive_tests(
+                summary, "spec text", 0, str(tmp_path)
+            )
+
+        assert len(result) >= 1
+        assert result[0]["failure_stage"] == "build"
+        assert result[0]["test_id"].startswith("adaptive-0-")
