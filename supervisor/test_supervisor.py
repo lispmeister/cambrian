@@ -688,3 +688,187 @@ class TestLinearSlope:
         from supervisor.campaign import _linear_slope
 
         assert _linear_slope([]) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Spec diff tests
+# ---------------------------------------------------------------------------
+
+_SPEC_A = """\
+## Preamble section
+some text here
+
+<!-- BEGIN FROZEN: identity-anchor -->
+## Frozen Section
+this must not change
+<!-- END FROZEN: identity-anchor -->
+
+## Implementation
+build this thing
+
+## Testing
+test this thing
+"""
+
+_SPEC_B = """\
+## Preamble section
+some text here
+
+<!-- BEGIN FROZEN: identity-anchor -->
+## Frozen Section
+this must not change
+<!-- END FROZEN: identity-anchor -->
+
+## Implementation
+build this thing differently
+with more lines
+
+## Testing
+test this thing
+"""
+
+
+class TestParseSections:
+    def test_preamble_captured(self) -> None:
+        from supervisor.spec_diff import parse_sections
+
+        spec = "line before\n## Section A\nbody\n"
+        sections = parse_sections(spec)
+        assert "__preamble__" in sections
+        assert "line before\n" in sections["__preamble__"]
+
+    def test_sections_split_correctly(self) -> None:
+        from supervisor.spec_diff import parse_sections
+
+        sections = parse_sections(_SPEC_A)
+        assert "Implementation" in sections
+        assert "Testing" in sections
+        assert "build this thing" in sections["Implementation"]
+
+    def test_frozen_section_names_detected(self) -> None:
+        from supervisor.spec_diff import frozen_section_names
+
+        frozen = frozen_section_names(_SPEC_A)
+        assert "Frozen Section" in frozen
+        assert "Implementation" not in frozen
+
+
+class TestDiffSpec:
+    def test_no_change_produces_empty_diff(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_A)
+        assert d.total_lines_added == 0
+        assert d.total_lines_removed == 0
+        assert d.sections_changed == []
+
+    def test_changed_section_detected(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        changed_names = [sc.section_name for sc in d.sections_changed]
+        assert "Implementation" in changed_names
+
+    def test_unchanged_sections_listed(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        assert "Testing" in d.sections_unchanged
+
+    def test_frozen_flag_set_on_frozen_section(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        spec_b_frozen_modified = _SPEC_A.replace(
+            "this must not change", "this has changed!"
+        )
+        d = diff_spec(_SPEC_A, spec_b_frozen_modified)
+        frozen_changed = [sc for sc in d.sections_changed if sc.is_frozen]
+        assert any(sc.section_name == "Frozen Section" for sc in frozen_changed)
+
+    def test_line_counts_correct(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        # _SPEC_B adds "with more lines" and changes one line in Implementation
+        assert d.total_lines_added >= 1
+        assert d.total_lines_removed >= 1
+
+    def test_hashes_differ(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        assert d.parent_hash != d.child_hash
+        assert d.parent_hash.startswith("sha256:")
+
+    def test_unified_diff_non_empty_on_change(self) -> None:
+        from supervisor.spec_diff import diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        assert "@@" in d.unified_diff
+
+
+class TestAttributeFitnessDelta:
+    def test_viability_delta_computed(self) -> None:
+        from supervisor.spec_diff import attribute_fitness_delta, diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        before = {"viability_rate": 0.4, "fitness_mean": {"total_duration_ms": 5000.0}}
+        after = {"viability_rate": 0.8, "fitness_mean": {"total_duration_ms": 4000.0}}
+        attr = attribute_fitness_delta(d, before, after)
+        assert attr["viability_rate_delta"] == pytest.approx(0.4, rel=1e-4)
+        assert attr["fitness_mean_deltas"]["total_duration_ms"] == pytest.approx(-1000.0, rel=1e-4)
+
+    def test_sections_changed_listed(self) -> None:
+        from supervisor.spec_diff import attribute_fitness_delta, diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        attr = attribute_fitness_delta(d, {}, {})
+        assert "Implementation" in attr["sections_changed"]
+
+    def test_entanglement_score_between_0_and_1(self) -> None:
+        from supervisor.spec_diff import attribute_fitness_delta, diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        attr = attribute_fitness_delta(d, {}, {})
+        assert 0.0 <= attr["entanglement_score"] <= 1.0
+
+    def test_no_change_zero_entanglement(self) -> None:
+        from supervisor.spec_diff import attribute_fitness_delta, diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_A)
+        attr = attribute_fitness_delta(d, {}, {})
+        assert attr["entanglement_score"] == 0.0
+        assert attr["sections_changed"] == []
+
+
+class TestApplyRevertDiff:
+    def test_apply_produces_modified_text(self) -> None:
+        from supervisor.spec_diff import apply_spec_diff, diff_spec
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        result = apply_spec_diff(_SPEC_A, d.unified_diff)
+        assert "build this thing differently" in result
+        assert "with more lines" in result
+
+    def test_revert_recovers_original(self) -> None:
+        from supervisor.spec_diff import diff_spec, revert_spec_diff
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        result = revert_spec_diff(_SPEC_B, d.unified_diff)
+        assert "build this thing differently" not in result
+        assert "build this thing" in result
+
+    def test_apply_empty_diff_unchanged(self) -> None:
+        from supervisor.spec_diff import apply_spec_diff
+
+        result = apply_spec_diff(_SPEC_A, "")
+        assert result == _SPEC_A
+
+    def test_roundtrip(self) -> None:
+        from supervisor.spec_diff import apply_spec_diff, diff_spec, revert_spec_diff
+
+        d = diff_spec(_SPEC_A, _SPEC_B)
+        applied = apply_spec_diff(_SPEC_A, d.unified_diff)
+        reverted = revert_spec_diff(applied, d.unified_diff)
+        # Reverted should match the original (modulo possible trailing newlines)
+        assert reverted.strip() == _SPEC_A.strip()
