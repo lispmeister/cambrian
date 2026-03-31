@@ -872,3 +872,121 @@ class TestApplyRevertDiff:
         reverted = revert_spec_diff(applied, d.unified_diff)
         # Reverted should match the original (modulo possible trailing newlines)
         assert reverted.strip() == _SPEC_A.strip()
+
+
+# ---------------------------------------------------------------------------
+# Spec grammar tests
+# ---------------------------------------------------------------------------
+
+
+def _make_valid_spec(extra_sections: str = "") -> str:
+    """Build a minimal valid spec for grammar tests.
+
+    Invariants lives inside the FROZEN block only — not duplicated in the
+    section list below — to avoid triggering the duplicate_heading rule.
+    """
+    non_frozen = [
+        "What This Document Is", "Glossary", "Problem Statement",
+        "Goals", "Non-Goals", "Design Principles", "What Prime Does", "Contracts",
+        "The Generation Loop", "Failure Handling", "LLM Integration",
+        "Implementation Requirements", "Acceptance Criteria", "Verification Layers",
+    ]
+    sections = "\n".join(f"## {s}\nsome content\n" for s in non_frozen)
+    return (
+        "<!-- BEGIN FROZEN: identity-anchor -->\n"
+        "## Invariants\nfrozen content here\n"
+        "<!-- END FROZEN: identity-anchor -->\n\n"
+        + sections
+        + "\nport 8401\nThis server MUST respond.\n"
+        + extra_sections
+    )
+
+
+class TestSpecGrammarValidation:
+    def test_valid_spec_no_violations(self) -> None:
+        from supervisor.spec_grammar import validate_spec
+
+        spec = _make_valid_spec()
+        violations = validate_spec(spec)
+        fatal = [v for v in violations if v.fatal]
+        assert fatal == [], f"Unexpected fatal violations: {fatal}"
+
+    def test_missing_required_section(self) -> None:
+        from supervisor.spec_grammar import validate_spec
+
+        # Remove "Goals" section
+        spec = _make_valid_spec().replace("## Goals\nsome content\n", "")
+        violations = validate_spec(spec)
+        rules = [v.rule for v in violations]
+        assert "missing_required_section" in rules
+
+    def test_missing_port(self) -> None:
+        from supervisor.spec_grammar import validate_spec
+
+        spec = _make_valid_spec().replace("port 8401", "port XXXX")
+        violations = validate_spec(spec)
+        rules = [v.rule for v in violations]
+        assert "missing_port" in rules
+
+    def test_duplicate_heading(self) -> None:
+        from supervisor.spec_grammar import validate_spec
+
+        spec = _make_valid_spec() + "\n## Goals\nduplicate\n"
+        violations = validate_spec(spec)
+        rules = [v.rule for v in violations]
+        assert "duplicate_heading" in rules
+
+    def test_unpaired_frozen_marker(self) -> None:
+        from supervisor.spec_grammar import validate_spec
+
+        spec = _make_valid_spec().replace("<!-- END FROZEN: identity-anchor -->", "")
+        violations = validate_spec(spec)
+        rules = [v.rule for v in violations]
+        assert "unpaired_frozen_markers" in rules
+
+
+class TestSpecGrammarMutation:
+    def test_valid_mutation_no_violations(self) -> None:
+        from supervisor.spec_grammar import validate_mutation
+
+        parent = _make_valid_spec()
+        child = parent.replace("The Generation Loop\nsome content", "The Generation Loop\nupdated content")
+        violations = validate_mutation(parent, child)
+        fatal = [v for v in violations if v.fatal]
+        assert fatal == []
+
+    def test_frozen_block_modified_rejected(self) -> None:
+        from supervisor.spec_grammar import validate_mutation
+
+        parent = _make_valid_spec()
+        child = parent.replace("frozen content here", "HACKED frozen content")
+        violations = validate_mutation(parent, child)
+        rules = [v.rule for v in violations]
+        assert "frozen_block_modified" in rules
+
+    def test_frozen_block_removed_rejected(self) -> None:
+        from supervisor.spec_grammar import validate_mutation
+
+        parent = _make_valid_spec()
+        child = parent.replace(
+            "<!-- BEGIN FROZEN: identity-anchor -->\n## Invariants\nfrozen content here\n<!-- END FROZEN: identity-anchor -->\n",
+            "",
+        )
+        violations = validate_mutation(parent, child)
+        rules = [v.rule for v in violations]
+        assert "frozen_block_removed" in rules
+
+    def test_is_valid_mutation_helper(self) -> None:
+        from supervisor.spec_grammar import is_valid_mutation
+
+        parent = _make_valid_spec()
+        child = parent.replace("LLM Integration\nsome content", "LLM Integration\nbetter content")
+        assert is_valid_mutation(parent, child)
+
+    def test_evolvable_sections_excludes_frozen(self) -> None:
+        from supervisor.spec_grammar import FROZEN_SECTION_NAMES, evolvable_sections
+
+        spec = _make_valid_spec()
+        sections = evolvable_sections(spec)
+        for frozen_name in FROZEN_SECTION_NAMES:
+            assert frozen_name not in sections
