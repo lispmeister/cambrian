@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-03-31
-**Total entries:** 17 (plus this index)
+**Total entries:** 18 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -26,6 +26,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-03-31b  | [journal-2026-03-31b.md](journal-2026-03-31b.md) | Spec grammar + mutation validation; Type 1 mutator (LLM+grammar retry); mini-campaign screener; BO loop (GP-EI) | cambrian-2e5, cambrian-7cc, cambrian-3sb, cambrian-yy5 |
 | 2026-03-31c  | [journal-2026-03-31c.md](journal-2026-03-31c.md) | Entanglement monitor (Clune modularity metric); adaptive Tier X test generation (Absolute Zero Reasoner-inspired) | cambrian-v3w, cambrian-3qo |
 | 2026-03-31d  | [journal-2026-03-31d.md](journal-2026-03-31d.md) | Spec vs code audit: 7 undocumented modules, GP-EI vs MAP-Elites, 14 missing env vars, dual-model→grammar | Pre-M2 spec alignment |
+| 2026-03-31e  | [journal-2026-03-31e.md](journal-2026-03-31e.md) | Deep integration audit: campaign promote/rollback, artifact-hash, dead code (adaptive_tests, entanglement), 13 new beads | Pre-M2 integration gaps |
 
 ---
 
