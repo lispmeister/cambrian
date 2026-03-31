@@ -12,8 +12,12 @@ their parent ## section. This matches the spec's logical decomposition for mutat
 import difflib
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
+
+import structlog
+
+log = structlog.get_logger(component="spec_diff")
 
 # ---------------------------------------------------------------------------
 # Section parsing

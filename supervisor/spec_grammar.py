@@ -13,7 +13,11 @@ Reference: CAMBRIAN-SPEC-005 §Mutation Constraints, adversarial review §3.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+import structlog
+
+log = structlog.get_logger(component="spec_grammar")
 
 # ---------------------------------------------------------------------------
 # Grammar constants

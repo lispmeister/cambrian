@@ -17,7 +17,11 @@ Reference: cambrian-evw (spec_diff), adversarial review §2.
 import re
 from dataclasses import dataclass
 
+import structlog
+
 from .spec_diff import SpecDiff, parse_sections
+
+log = structlog.get_logger(component="entanglement")
 
 # ---------------------------------------------------------------------------
 # Data structures

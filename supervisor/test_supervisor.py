@@ -245,6 +245,36 @@ async def test_debug_state_returns_json(client: TestClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_spawn_missing_spec_hash_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    resp = await client.post(
+        "/spawn",
+        json={"generation": 1, "artifact-path": "gen-1"},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+    assert "spec-hash" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_empty_spec_hash_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    resp = await client.post(
+        "/spawn",
+        json={"generation": 1, "artifact-path": "gen-1", "spec-hash": ""},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+    assert "spec-hash" in data["error"]
+
+
+@pytest.mark.asyncio
 async def test_spawn_missing_artifact_path(
     client: TestClient,
     artifacts_root: Path,

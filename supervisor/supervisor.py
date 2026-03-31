@@ -115,6 +115,9 @@ async def handle_spawn(request: web.Request) -> web.Response:
     body: dict[str, Any] = await request.json()
     generation = int(body["generation"])
     artifact_rel = body["artifact-path"]  # relative path inside artifacts repo
+    spec_hash = body.get("spec-hash", "")
+    if not spec_hash:
+        return web.json_response({"ok": False, "error": "spec-hash is required"}, status=400)
 
     artifacts_root = git_ops.artifacts_root()
     artifact_path = (Path(artifacts_root) / artifact_rel).resolve()
@@ -179,7 +182,7 @@ async def handle_spawn(request: web.Request) -> web.Response:
     record: dict[str, Any] = {
         "generation": generation,
         "parent": generation - 1,
-        "spec-hash": body.get("spec-hash", ""),
+        "spec-hash": spec_hash,
         "artifact-hash": "",
         "outcome": "in_progress",
         "artifact-ref": f"gen-{generation}",
