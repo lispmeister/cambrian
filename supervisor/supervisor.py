@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -18,6 +19,27 @@ from aiohttp import web
 from . import generations, git_ops
 
 log = structlog.get_logger(component="supervisor")
+
+
+# ---------------------------------------------------------------------------
+# Artifact hash
+# ---------------------------------------------------------------------------
+
+
+def compute_artifact_hash(artifact_root: Path, files: list[str]) -> str:
+    """Compute SHA-256 hash of artifact files per CAMBRIAN-SPEC-005 algorithm.
+
+    Files are processed in lexicographic order. manifest.json is excluded.
+    Each file contributes: path_bytes + null_byte + file_bytes.
+    """
+    hasher = hashlib.sha256()
+    for rel_path in sorted(files):
+        if rel_path == "manifest.json":
+            continue
+        hasher.update(rel_path.encode())
+        hasher.update(b"\0")
+        hasher.update((artifact_root / rel_path).read_bytes())
+    return f"sha256:{hasher.hexdigest()}"
 
 
 # ---------------------------------------------------------------------------
@@ -178,12 +200,23 @@ async def handle_spawn(request: web.Request) -> web.Response:
     # Read campaign-id from body if present (MAY field for M2)
     campaign_id: str | None = body.get("campaign-id")
 
+    # Compute artifact-hash from manifest files list (CAMBRIAN-SPEC-005 algorithm)
+    artifact_hash = ""
+    manifest_file = artifact_path / "manifest.json"
+    if manifest_file.exists():
+        try:
+            manifest = json.loads(manifest_file.read_text())
+            files: list[str] = manifest.get("files", [])
+            artifact_hash = compute_artifact_hash(artifact_path, files)
+        except Exception as e:
+            log.warning("artifact_hash_failed", generation=generation, error=str(e))
+
     # Record in-progress state
     record: dict[str, Any] = {
         "generation": generation,
         "parent": generation - 1,
         "spec-hash": spec_hash,
-        "artifact-hash": "",
+        "artifact-hash": artifact_hash,
         "outcome": "in_progress",
         "artifact-ref": f"gen-{generation}",
         "created": datetime.now(UTC).isoformat(),

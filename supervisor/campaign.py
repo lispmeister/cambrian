@@ -229,11 +229,63 @@ async def _run_one_generation(
         for record in records:
             if record.get("generation") == generation:
                 if record.get("outcome") != "in_progress":
+                    record = await _promote_or_rollback(session, supervisor_url, generation, record)
                     return record
                 break
 
     log.warning("campaign_generation_timeout", generation=generation)
     return _error_record(generation, "timeout waiting for generation to complete")
+
+
+async def _promote_or_rollback(
+    session: ClientSession,
+    supervisor_url: str,
+    generation: int,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Call /promote or /rollback based on viability, return the updated record.
+
+    If the record is already in a terminal state (promoted/failed/timeout), skip.
+    """
+    outcome = record.get("outcome")
+    if outcome in ("promoted", "failed", "timeout", "in_progress"):
+        return record
+
+    viable = record.get("viability", {}).get("status") == "viable"
+    endpoint = "/promote" if viable else "/rollback"
+    try:
+        async with session.post(
+            f"{supervisor_url}{endpoint}", json={"generation": generation}
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                log.warning(
+                    "promote_rollback_failed",
+                    generation=generation,
+                    endpoint=endpoint,
+                    status=resp.status,
+                    body=text[:200],
+                )
+                return record
+    except Exception as e:
+        log.warning(
+            "promote_rollback_error",
+            generation=generation,
+            endpoint=endpoint,
+            error=str(e),
+        )
+        return record
+
+    log.info(
+        "generation_finalized",
+        generation=generation,
+        endpoint=endpoint,
+        viable=viable,
+    )
+    # Return updated record reflecting the terminal outcome
+    record = dict(record)
+    record["outcome"] = "promoted" if viable else "failed"
+    return record
 
 
 def _error_record(generation: int, reason: str) -> dict[str, Any]:

@@ -24,6 +24,7 @@ import structlog
 from skopt import Optimizer
 from skopt.space import Real
 
+from .adaptive_tests import expire_old_tests, generate_adaptive_tests
 from .campaign import run_campaign
 from .spec_diff import parse_sections
 from .spec_grammar import evolvable_sections
@@ -203,7 +204,11 @@ class SpecBOLoop:
             self._record_observation(base_obs)
 
         for iteration in range(1, self.budget + 1):
+            campaign_index = iteration - 1
             log.info("bo_loop_iteration", iteration=iteration, budget=self.budget)
+
+            # Expire adaptive tests that have aged out
+            expire_old_tests(campaign_index)
 
             # Ask BO for the next point
             suggested_x: list[float] = self.optimizer.ask()
@@ -233,7 +238,8 @@ class SpecBOLoop:
             features = extract_features(mutated, self.section_names, self.base_spec_text)
 
             obs = await self._evaluate_spec(
-                mutated, features=features, target_section=target_section
+                mutated, features=features, target_section=target_section,
+                campaign_index=campaign_index,
             )
             if obs:
                 self.observations.append(obs)
@@ -249,6 +255,7 @@ class SpecBOLoop:
         spec_text: str,
         features: list[float],
         target_section: str | None,
+        campaign_index: int = 0,
     ) -> BOObservation | None:
         """Run mini-campaign (+ optionally full campaign) for one spec variant."""
         import hashlib
@@ -303,6 +310,14 @@ class SpecBOLoop:
             )
             self._generation_counter += self.full_n
             full_viability = full_summary.get("viability_rate", 0.0)
+
+            # After a failed campaign, generate adaptive tests probing the failure mode
+            if full_viability < 1.0:
+                await generate_adaptive_tests(
+                    campaign_summary=full_summary,
+                    spec_text=spec_text,
+                    campaign_index=campaign_index,
+                )
 
             log.info(
                 "bo_loop_full_campaign_done",
