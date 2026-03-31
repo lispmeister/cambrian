@@ -21,8 +21,14 @@ import os
 import sys
 from pathlib import Path
 
+# Ensure project root is on sys.path so `supervisor` package is importable
+# whether the script is run from the project root or the scripts/ directory.
+_project_root = Path(__file__).parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 # Load .env from project root if present (before any other imports that might read env vars)
-_env_file = Path(__file__).parent.parent / ".env"
+_env_file = _project_root / ".env"
 if _env_file.exists():
     for _line in _env_file.read_text().splitlines():
         _line = _line.strip()

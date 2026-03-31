@@ -18,6 +18,8 @@ from typing import Any
 import structlog
 from aiohttp import ClientSession
 
+from . import prime_runner
+
 log = structlog.get_logger(component="campaign")
 
 CAMPAIGN_POLL_INTERVAL = float(os.environ.get("CAMBRIAN_CAMPAIGN_POLL_INTERVAL", "2.0"))
@@ -141,14 +143,21 @@ async def run_campaign(
     n: int | None = None,
     supervisor_url: str | None = None,
     start_generation: int = 1,
+    artifacts_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run N generations against one spec variant and return a CampaignSummary.
+
+    For each generation:
+      1. Call prime_runner.generate_artifact() — invoke LLM to produce the artifact.
+      2. POST /spawn — hand the artifact to the Supervisor's Test Rig.
+      3. Poll until tested, then call /promote or /rollback.
 
     Args:
         spec_path: Path to the spec file to use for this campaign.
         n: Number of generations to run (default: CAMBRIAN_CAMPAIGN_LENGTH env var, else 5).
         supervisor_url: Supervisor base URL (default: CAMBRIAN_SUPERVISOR_URL env var).
         start_generation: Generation number to start from (default: 1).
+        artifacts_root: Path to the artifacts repo root (default: CAMBRIAN_ARTIFACTS_ROOT).
 
     Returns:
         CampaignSummary dict as produced by compute_campaign_summary().
@@ -157,25 +166,60 @@ async def run_campaign(
         n = int(os.environ.get("CAMBRIAN_CAMPAIGN_LENGTH", "5"))
     if supervisor_url is None:
         supervisor_url = os.environ.get("CAMBRIAN_SUPERVISOR_URL", "http://localhost:8400")
+    if artifacts_root is None:
+        artifacts_root = Path(os.environ.get("CAMBRIAN_ARTIFACTS_ROOT", "../cambrian-artifacts"))
 
     campaign_id = f"campaign-{uuid.uuid4().hex[:8]}"
+    spec_text = spec_path.read_text()
     spec_hash = _hash_file(spec_path)
 
     log.info("campaign_start", campaign_id=campaign_id, spec=str(spec_path), n=n)
+
+    # Fetch generation history once for context
+    history: list[dict[str, Any]] = []
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{supervisor_url}/versions") as resp:
+                if resp.status == 200:
+                    history = await resp.json()
+    except Exception:
+        pass
 
     records: list[dict[str, Any]] = []
     async with ClientSession() as session:
         for i in range(n):
             generation = start_generation + i
+            artifact_rel = f"campaign-{campaign_id}-gen-{generation}"
+            parent = generation - 1
+
+            # Step 1: Generate artifact via LLM
+            try:
+                artifact_dir, _, token_usage = await prime_runner.generate_artifact(
+                    spec_text=spec_text,
+                    generation=generation,
+                    parent=parent,
+                    artifacts_root=artifacts_root,
+                    history=history,
+                    artifact_rel=artifact_rel,
+                )
+            except Exception as e:
+                log.error("generate_artifact_failed", generation=generation, error=str(e))
+                records.append(_error_record(generation, f"generate_artifact failed: {e}"))
+                continue
+
+            # Step 2: Spawn the test rig on the generated artifact
             record = await _run_one_generation(
                 session=session,
                 supervisor_url=supervisor_url,
                 generation=generation,
                 spec_hash=spec_hash,
-                artifact_path=f"campaign-{campaign_id}-gen-{generation}",
+                artifact_path=artifact_rel,
                 campaign_id=campaign_id,
             )
             records.append(record)
+            # Update history for next generation's context
+            history.append(record)
             log.info(
                 "campaign_generation_done",
                 campaign_id=campaign_id,
