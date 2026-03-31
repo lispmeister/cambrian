@@ -215,12 +215,13 @@ async def generate_artifact(
             attempt=attempt,
             model=model,
         )
-        response = await client.messages.create(
+        async with client.messages.stream(
             model=model,
             max_tokens=_MAX_TOKENS,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            response = await stream.get_final_message()
         token_usage["input"] += response.usage.input_tokens
         token_usage["output"] += response.usage.output_tokens
 
