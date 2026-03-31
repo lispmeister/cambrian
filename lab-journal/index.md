@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-03-31
-**Total entries:** 14 (plus this index)
+**Total entries:** 15 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -23,6 +23,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-03-30b  | [journal-2026-03-30b.md](journal-2026-03-30b.md) | CLAUDE.md agent instructions (+108 lines), Docker pip → uv switch | cambrian-yq8, cambrian-luv                |
 | 2026-03-30c  | [journal-2026-03-30c.md](journal-2026-03-30c.md) | Layer 1 spec-vector evaluation in Test Rig; container isolation hardening (separate /output mount, process group kill); Kanare journal compliance | cambrian-4do, cambrian-2cf |
 | 2026-03-31   | [journal-2026-03-31.md](journal-2026-03-31.md) | M2 infrastructure: test-quality fitness dims + discount weights; campaign runner; spec diff + section attribution | cambrian-mw0, cambrian-9ic, cambrian-evw |
+| 2026-03-31b  | [journal-2026-03-31b.md](journal-2026-03-31b.md) | Spec grammar + mutation validation; Type 1 mutator (LLM+grammar retry); mini-campaign screener; BO loop (GP-EI) | cambrian-2e5, cambrian-7cc, cambrian-3sb, cambrian-yy5 |
 
 ---
 
