@@ -22,7 +22,7 @@ RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp p
 RUN useradd -m -s /bin/bash cambrian
 
 # Bake in the Test Rig
-COPY test-rig/test_rig.py /test-rig/test_rig.py
+COPY test-rig/ /test-rig/
 
 WORKDIR /workspace
 

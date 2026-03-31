@@ -8,6 +8,12 @@ import structlog
 
 log = structlog.get_logger()
 
+# Single lock serialising all git operations on the artifacts repo.
+# Git's own locking prevents concurrent index writes, but we also need to
+# prevent interleaved branch checkouts (checkout A / checkout B / commit on B
+# leaving A's files committed under B's branch name).
+_git_lock: asyncio.Lock = asyncio.Lock()
+
 
 def artifacts_root() -> str:
     return os.environ.get("CAMBRIAN_ARTIFACTS_ROOT", "../cambrian-artifacts")
@@ -18,7 +24,12 @@ class GitError(Exception):
 
 
 async def git(*args: str) -> str:
-    """Run a git command in the artifacts repo. Returns stdout."""
+    """Run a git command in the artifacts repo. Returns stdout.
+
+    Does NOT acquire _git_lock — callers that need atomicity across multiple
+    git commands must hold the lock themselves (see create_generation_branch,
+    promote, rollback).
+    """
     cwd = artifacts_root()
     # Uses create_subprocess_exec (not shell=True) — no injection risk
     proc = await asyncio.create_subprocess_exec(
@@ -34,16 +45,36 @@ async def git(*args: str) -> str:
     return stdout.decode().strip()
 
 
+async def create_generation_branch(generation: int) -> None:
+    """Checkout main, create gen-N branch, stage all files, and commit.
+
+    Called from handle_spawn. Holds _git_lock for the entire sequence to
+    prevent concurrent spawns from racing on branch creation and checkout.
+    """
+    async with _git_lock:
+        current = await git("rev-parse", "--abbrev-ref", "HEAD")
+        if current != "main":
+            await git("checkout", "main")
+        await git("checkout", "-b", f"gen-{generation}")
+        await git("add", "-A")
+        await git(
+            "commit",
+            "--allow-empty",
+            "-m",
+            f"Generation {generation} artifact",
+        )
+
+
 async def promote(generation: int, artifact_path: Path) -> str:
     """Commit artifact on a branch, merge to main, tag as gen-N. Returns tag name."""
     branch = f"gen-{generation}"
     tag = f"gen-{generation}"
 
-    # Branch was already created and committed in spawn_handler — just switch to main
-    await git("checkout", "main")
-    await git("merge", branch, "--no-ff", "-m", f"Promote generation {generation}")
-    await git("tag", "-a", tag, "-m", f"Generation {generation} promoted")
-    await git("branch", "-d", branch)
+    async with _git_lock:
+        await git("checkout", "main")
+        await git("merge", branch, "--no-ff", "-m", f"Promote generation {generation}")
+        await git("tag", "-a", tag, "-m", f"Generation {generation} promoted")
+        await git("branch", "-d", branch)
 
     log.info("generation_promoted", generation=generation, tag=tag)
     return tag
@@ -54,23 +85,22 @@ async def rollback(generation: int) -> str:
     branch = f"gen-{generation}"
     base_tag = f"gen-{generation}-failed"
 
-    # Handle retry suffixes if the failed tag already exists
-    existing_tags = (await git("tag", "-l", f"{base_tag}*")).splitlines()
-    if existing_tags:
-        tag = f"{base_tag}-{len(existing_tags) + 1}"
-    else:
-        tag = base_tag
+    async with _git_lock:
+        existing_tags = (await git("tag", "-l", f"{base_tag}*")).splitlines()
+        if existing_tags:
+            tag = f"{base_tag}-{len(existing_tags) + 1}"
+        else:
+            tag = base_tag
 
-    # Tag before deleting the branch (branch may not exist if build failed before commit)
-    try:
-        await git("tag", "-a", tag, branch, "-m", f"Generation {generation} failed")
-    except GitError:
-        pass
+        try:
+            await git("tag", "-a", tag, branch, "-m", f"Generation {generation} failed")
+        except GitError:
+            pass
 
-    try:
-        await git("branch", "-D", branch)
-    except GitError:
-        pass
+        try:
+            await git("branch", "-D", branch)
+        except GitError:
+            pass
 
     log.info("generation_rolled_back", generation=generation, tag=tag)
     return tag
@@ -78,6 +108,7 @@ async def rollback(generation: int) -> str:
 
 async def ensure_on_main() -> None:
     """Make sure the artifacts repo is on main branch."""
-    current = await git("rev-parse", "--abbrev-ref", "HEAD")
-    if current != "main":
-        await git("checkout", "main")
+    async with _git_lock:
+        current = await git("rev-parse", "--abbrev-ref", "HEAD")
+        if current != "main":
+            await git("checkout", "main")

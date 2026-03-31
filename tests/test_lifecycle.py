@@ -41,6 +41,7 @@ def mock_git_ops(tmp_path: Path) -> Any:
         mock.artifacts_root.return_value = str(tmp_path / "artifacts")
         mock.ensure_on_main = AsyncMock()
         mock.git = AsyncMock()
+        mock.create_generation_branch = AsyncMock()
         mock.promote = AsyncMock(return_value="gen-1")
         mock.rollback = AsyncMock(return_value="gen-1-failed")
         mock.GitError = Exception

@@ -108,11 +108,19 @@ class TestGenerations:
         assert rec is not None
         assert rec["outcome"] == "failed"  # unchanged
 
-    def test_update_sets_completed_timestamp(self, artifacts_root: Path) -> None:
+    def test_update_sets_completed_on_terminal_outcome(self, artifacts_root: Path) -> None:
+        """completed is stamped only when reaching a terminal state."""
         from supervisor import generations
 
         generations.append({"generation": 1, "outcome": "in_progress"})
+        # Non-terminal update (tested) must NOT set completed
         generations.update(1, {"outcome": "tested"})
+        rec = generations.get(1)
+        assert rec is not None
+        assert rec.get("completed") is None
+
+        # Terminal update (promoted) MUST set completed
+        generations.update(1, {"outcome": "promoted"})
         rec = generations.get(1)
         assert rec is not None
         assert "completed" in rec
@@ -141,6 +149,7 @@ def mock_git_ops(tmp_path: Path) -> Any:
         mock.artifacts_root.return_value = str(tmp_path / "artifacts")
         mock.ensure_on_main = AsyncMock()
         mock.git = AsyncMock()
+        mock.create_generation_branch = AsyncMock()
         mock.promote = AsyncMock(return_value="gen-1")
         mock.rollback = AsyncMock(return_value="gen-1-failed")
         mock.GitError = Exception
