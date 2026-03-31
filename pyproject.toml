@@ -10,6 +10,7 @@ dependencies = [
     "structlog>=24.0",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "scikit-optimize>=0.9",
 ]
 
 [project.optional-dependencies]

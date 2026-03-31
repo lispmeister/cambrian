@@ -553,15 +553,21 @@ async def test_run_test_rig_cleans_up_cache_dirs(artifacts_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_record(generation: int, viable: bool, failure_stage: str = "none", fitness: dict | None = None) -> dict:
+def _make_record(
+    generation: int,
+    viable: bool,
+    failure_stage: str = "none",
+    fitness: dict | None = None,
+) -> dict:
     """Build a minimal generation record for campaign tests."""
+    _all_stages = ["manifest", "build", "test", "start", "health"]
     return {
         "generation": generation,
         "outcome": "promoted" if viable else "failed",
         "viability": {
             "status": "viable" if viable else "non-viable",
             "failure_stage": failure_stage,
-            "fitness": fitness or {"stages_completed": ["manifest", "build", "test", "start", "health"]},
+            "fitness": fitness or {"stages_completed": _all_stages},
         },
     }
 
@@ -609,8 +615,10 @@ class TestComputeCampaignSummary:
         from supervisor.campaign import compute_campaign_summary
 
         records = [
-            _make_record(1, viable=True, fitness={"total_duration_ms": 1000, "test_count": 5, "stages_completed": []}),
-            _make_record(2, viable=True, fitness={"total_duration_ms": 2000, "test_count": 3, "stages_completed": []}),
+            _make_record(1, viable=True, fitness={"total_duration_ms": 1000, "test_count": 5,
+                                                  "stages_completed": []}),
+            _make_record(2, viable=True, fitness={"total_duration_ms": 2000, "test_count": 3,
+                                                  "stages_completed": []}),
         ]
         summary = compute_campaign_summary(records)
         assert summary["fitness_mean"]["total_duration_ms"] == pytest.approx(1500.0, rel=1e-4)
@@ -655,10 +663,13 @@ class TestComputeCampaignSummary:
     def test_stages_completed_distribution(self) -> None:
         from supervisor.campaign import compute_campaign_summary
 
+        all_stages = ["manifest", "build", "test", "start", "health"]
         records = [
-            _make_record(1, viable=True, fitness={"stages_completed": ["manifest", "build", "test", "start", "health"]}),
-            _make_record(2, viable=False, failure_stage="build", fitness={"stages_completed": ["manifest", "build"]}),
-            _make_record(3, viable=False, failure_stage="test", fitness={"stages_completed": ["manifest", "build", "test"]}),
+            _make_record(1, viable=True, fitness={"stages_completed": all_stages}),
+            _make_record(2, viable=False, failure_stage="build",
+                         fitness={"stages_completed": ["manifest", "build"]}),
+            _make_record(3, viable=False, failure_stage="test",
+                         fitness={"stages_completed": ["manifest", "build", "test"]}),
         ]
         summary = compute_campaign_summary(records)
         dist = summary["stages_completed_distribution"]
@@ -950,7 +961,9 @@ class TestSpecGrammarMutation:
         from supervisor.spec_grammar import validate_mutation
 
         parent = _make_valid_spec()
-        child = parent.replace("The Generation Loop\nsome content", "The Generation Loop\nupdated content")
+        child = parent.replace(
+            "The Generation Loop\nsome content", "The Generation Loop\nupdated content"
+        )
         violations = validate_mutation(parent, child)
         fatal = [v for v in violations if v.fatal]
         assert fatal == []
@@ -968,10 +981,12 @@ class TestSpecGrammarMutation:
         from supervisor.spec_grammar import validate_mutation
 
         parent = _make_valid_spec()
-        child = parent.replace(
-            "<!-- BEGIN FROZEN: identity-anchor -->\n## Invariants\nfrozen content here\n<!-- END FROZEN: identity-anchor -->\n",
-            "",
+        frozen_block = (
+            "<!-- BEGIN FROZEN: identity-anchor -->\n"
+            "## Invariants\nfrozen content here\n"
+            "<!-- END FROZEN: identity-anchor -->\n"
         )
+        child = parent.replace(frozen_block, "")
         violations = validate_mutation(parent, child)
         rules = [v.rule for v in violations]
         assert "frozen_block_removed" in rules
@@ -990,3 +1005,253 @@ class TestSpecGrammarMutation:
         sections = evolvable_sections(spec)
         for frozen_name in FROZEN_SECTION_NAMES:
             assert frozen_name not in sections
+
+
+# ---------------------------------------------------------------------------
+# Spec mutator tests (cambrian-7cc)
+# ---------------------------------------------------------------------------
+
+
+class TestSpecMutator:
+    def test_propose_target_section_build_failure(self) -> None:
+        from supervisor.spec_mutator import propose_target_section
+
+        summary = {
+            "viability_rate": 0.0,
+            "failure_distribution": {"build": 4, "none": 1},
+        }
+        evolvable = ["Implementation Requirements", "LLM Integration", "Contracts"]
+        target = propose_target_section(summary, evolvable)
+        assert target == "Implementation Requirements"
+
+    def test_propose_target_section_test_failure(self) -> None:
+        from supervisor.spec_mutator import propose_target_section
+
+        summary = {
+            "viability_rate": 0.2,
+            "failure_distribution": {"test": 3, "none": 2},
+        }
+        evolvable = ["Acceptance Criteria", "LLM Integration"]
+        target = propose_target_section(summary, evolvable)
+        assert target == "Acceptance Criteria"
+
+    def test_propose_target_section_no_failures(self) -> None:
+        from supervisor.spec_mutator import propose_target_section
+
+        summary = {"viability_rate": 1.0, "failure_distribution": {"none": 5}}
+        evolvable = ["Goals", "LLM Integration"]
+        target = propose_target_section(summary, evolvable)
+        assert target is None
+
+    def test_propose_target_section_empty_evolvable(self) -> None:
+        from supervisor.spec_mutator import propose_target_section
+
+        summary = {"viability_rate": 0.0, "failure_distribution": {"build": 3}}
+        target = propose_target_section(summary, [])
+        assert target is None
+
+    def test_extract_spec_strips_code_fence(self) -> None:
+        from supervisor.spec_mutator import _extract_spec_from_response
+
+        response = "```markdown\n## Section A\ncontent\n```"
+        result = _extract_spec_from_response(response)
+        assert result is not None
+        assert "## Section A" in result
+        assert "```" not in result
+
+    def test_extract_spec_no_fence(self) -> None:
+        from supervisor.spec_mutator import _extract_spec_from_response
+
+        response = "## Section A\ncontent here"
+        result = _extract_spec_from_response(response)
+        assert result == response
+
+    def test_extract_spec_empty_returns_none(self) -> None:
+        from supervisor.spec_mutator import _extract_spec_from_response
+
+        assert _extract_spec_from_response("") is None
+        assert _extract_spec_from_response("   ") is None
+
+    @pytest.mark.asyncio
+    async def test_type1_mutate_grammar_violation_retries(self) -> None:
+        """type1_mutate retries when the response fails grammar validation."""
+        from unittest.mock import patch
+
+        from supervisor.spec_mutator import type1_mutate
+
+        parent = _make_valid_spec()
+
+        # First response: invalid (removes required section)
+        invalid_mutated = parent.replace("## Goals\nsome content\n", "")
+        # Second response: valid (just changes content)
+        valid_mutated = parent.replace("Goals\nsome content", "Goals\nbetter content")
+
+        mock_msg1 = MagicMock()
+        mock_msg1.content = [MagicMock(text=invalid_mutated)]
+        mock_msg2 = MagicMock()
+        mock_msg2.content = [MagicMock(text=valid_mutated)]
+
+        call_count = 0
+
+        async def fake_create(**kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            return mock_msg1 if call_count == 1 else mock_msg2
+
+        mock_messages = MagicMock()
+        mock_messages.create = fake_create
+        mock_client = MagicMock()
+        mock_client.messages = mock_messages
+
+        with patch("supervisor.spec_mutator.anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await type1_mutate(parent, {})
+
+        assert result is not None
+        assert call_count == 2  # retried once
+
+    @pytest.mark.asyncio
+    async def test_type1_mutate_returns_none_on_all_failures(self) -> None:
+        """type1_mutate returns None when all attempts fail grammar check."""
+        from unittest.mock import patch
+
+        from supervisor.spec_mutator import type1_mutate
+
+        parent = _make_valid_spec()
+        # Always return a spec missing a required section
+        bad = parent.replace("## Goals\nsome content\n", "")
+
+        mock_msg = MagicMock()
+        mock_msg.content = [MagicMock(text=bad)]
+
+        async def fake_create(**kwargs: Any) -> Any:
+            return mock_msg
+
+        mock_messages = MagicMock()
+        mock_messages.create = fake_create
+        mock_client = MagicMock()
+        mock_client.messages = mock_messages
+
+        with patch("supervisor.spec_mutator.anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await type1_mutate(parent, {})
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# BO loop unit tests (cambrian-yy5)
+# ---------------------------------------------------------------------------
+
+
+class TestBOLoop:
+    def test_extract_features_base_spec_all_zeros(self, tmp_path: Path) -> None:
+        from supervisor.bo_loop import extract_features
+        from supervisor.spec_grammar import evolvable_sections
+
+        spec = _make_valid_spec()
+        sections = evolvable_sections(spec)
+        features = extract_features(spec, sections, spec)
+        assert all(f == 0.0 for f in features)
+
+    def test_extract_features_changed_section(self, tmp_path: Path) -> None:
+        from supervisor.bo_loop import extract_features
+        from supervisor.spec_grammar import evolvable_sections
+
+        base = _make_valid_spec()
+        modified = base.replace("## Goals\nsome content\n", "## Goals\nline1\nline2\nline3\n")
+        sections = evolvable_sections(base)
+        features = extract_features(modified, sections, base)
+        # Goals section grew by 2 lines → one dimension should be > 0
+        assert any(f > 0 for f in features)
+
+    def test_decode_suggestion_picks_largest_magnitude(self) -> None:
+        from supervisor.bo_loop import decode_suggestion
+
+        sections = ["Goals", "LLM Integration", "Contracts"]
+        # Second dimension has largest magnitude
+        suggested_x = [2.0, 50.0, -3.0]
+        target = decode_suggestion(suggested_x, sections, {})
+        assert target == "LLM Integration"
+
+    def test_decode_suggestion_small_magnitudes_fallback(self) -> None:
+        from supervisor.bo_loop import decode_suggestion
+
+        sections = ["Goals", "LLM Integration"]
+        # All near-zero → falls back to propose_target_section
+        suggested_x = [0.5, 0.3]
+        # Empty campaign_summary → propose_target_section returns None
+        target = decode_suggestion(suggested_x, sections, {})
+        assert target is None
+
+    def test_bo_loop_init(self, tmp_path: Path) -> None:
+        from supervisor.bo_loop import SpecBOLoop
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        loop = SpecBOLoop(spec_path, budget=5)
+        assert len(loop.section_names) > 0
+        assert loop.budget == 5
+
+    def test_bo_loop_optimizer_dimensions_match_sections(self, tmp_path: Path) -> None:
+        from supervisor.bo_loop import SpecBOLoop
+        from supervisor.spec_grammar import evolvable_sections
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        loop = SpecBOLoop(spec_path, budget=3)
+        expected = len(evolvable_sections(spec))
+        assert len(loop.optimizer.space.dimensions) == expected
+
+
+# ---------------------------------------------------------------------------
+# Mini-campaign screener tests (cambrian-3sb)
+# ---------------------------------------------------------------------------
+
+
+class TestMiniCampaignScreener:
+    @pytest.mark.asyncio
+    async def test_screen_passes_when_any_viable(self) -> None:
+        from unittest.mock import patch
+
+        from supervisor.campaign import screen_mutation
+
+        async def fake_run_campaign(**kwargs: Any) -> dict:
+            return {"viability_rate": 0.5, "generation_count": 2}
+
+        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
+            passes, summary = await screen_mutation(Path("/tmp/spec.md"))
+
+        assert passes is True
+        assert summary["viability_rate"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_screen_fails_when_none_viable(self) -> None:
+        from unittest.mock import patch
+
+        from supervisor.campaign import screen_mutation
+
+        async def fake_run_campaign(**kwargs: Any) -> dict:
+            return {"viability_rate": 0.0, "generation_count": 2}
+
+        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
+            passes, summary = await screen_mutation(Path("/tmp/spec.md"))
+
+        assert passes is False
+
+    @pytest.mark.asyncio
+    async def test_screen_uses_mini_n_default(self) -> None:
+        from unittest.mock import patch
+
+        from supervisor.campaign import screen_mutation
+
+        captured: dict = {}
+
+        async def fake_run_campaign(**kwargs: Any) -> dict:
+            captured.update(kwargs)
+            return {"viability_rate": 1.0, "generation_count": kwargs.get("n", 0)}
+
+        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
+            await screen_mutation(Path("/tmp/spec.md"), n=2)
+
+        assert captured.get("n") == 2
