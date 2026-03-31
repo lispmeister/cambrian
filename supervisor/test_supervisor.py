@@ -1209,15 +1209,16 @@ class TestSpecMutator:
 
         call_count = 0
 
-        async def fake_create(**kwargs: Any) -> Any:
+        def fake_stream(**kwargs: Any) -> Any:
             nonlocal call_count
             call_count += 1
-            return mock_msg1 if call_count == 1 else mock_msg2
+            msg = mock_msg1 if call_count == 1 else mock_msg2
+            cm = AsyncMock()
+            cm.__aenter__.return_value.get_final_message = AsyncMock(return_value=msg)
+            return cm
 
-        mock_messages = MagicMock()
-        mock_messages.create = fake_create
         mock_client = MagicMock()
-        mock_client.messages = mock_messages
+        mock_client.messages.stream = fake_stream
 
         with patch("supervisor.spec_mutator.anthropic.AsyncAnthropic", return_value=mock_client):
             result = await type1_mutate(parent, {})
@@ -1239,13 +1240,13 @@ class TestSpecMutator:
         mock_msg = MagicMock()
         mock_msg.content = [MagicMock(text=bad)]
 
-        async def fake_create(**kwargs: Any) -> Any:
-            return mock_msg
+        def fake_stream(**kwargs: Any) -> Any:
+            cm = AsyncMock()
+            cm.__aenter__.return_value.get_final_message = AsyncMock(return_value=mock_msg)
+            return cm
 
-        mock_messages = MagicMock()
-        mock_messages.create = fake_create
         mock_client = MagicMock()
-        mock_client.messages = mock_messages
+        mock_client.messages.stream = fake_stream
 
         with patch("supervisor.spec_mutator.anthropic.AsyncAnthropic", return_value=mock_client):
             result = await type1_mutate(parent, {})
@@ -1618,9 +1619,10 @@ def test_beta():
         fake_response = MagicMock()
         fake_response.content = [fake_content]
 
-        mock_create = AsyncMock(return_value=fake_response)
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__.return_value.get_final_message = AsyncMock(return_value=fake_response)
         with patch("anthropic.AsyncAnthropic") as mock_client_cls:
-            mock_client_cls.return_value.messages.create = mock_create
+            mock_client_cls.return_value.messages.stream = MagicMock(return_value=mock_stream_cm)
             result = await generate_adaptive_tests(
                 summary, "spec text", 0, str(tmp_path)
             )

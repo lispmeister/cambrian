@@ -76,11 +76,12 @@ async def type1_mutate(
             target_section=target_section,
         )
         try:
-            response = await client.messages.create(
+            async with client.messages.stream(
                 model=model,
                 max_tokens=_MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
-            )
+            ) as stream:
+                response = await stream.get_final_message()
         except anthropic.APIError as e:
             log.error("type1_mutate_api_error", attempt=attempt, error=str(e))
             continue

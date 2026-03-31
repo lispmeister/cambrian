@@ -162,11 +162,12 @@ async def generate_adaptive_tests(
     prompt = _build_test_gen_prompt(campaign_summary, spec_text, dominant_stage, n)
 
     try:
-        response = await client.messages.create(
+        async with client.messages.stream(
             model=model,
             max_tokens=_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            response = await stream.get_final_message()
     except anthropic.APIError as e:
         log.error("adaptive_tests_api_error", error=str(e))
         return []
