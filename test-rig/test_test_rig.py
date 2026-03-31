@@ -415,6 +415,57 @@ class TestComputeFitness:
         assert fitness["token_input"] == 9999
         assert fitness["token_output"] == 4444
 
+    def test_fitness_weights_always_present(self, workspace: Path) -> None:
+        import test_rig
+
+        m = _write_manifest(workspace)
+        checks = {s: {"passed": False, "duration_ms": 0} for s in test_rig.ALL_STAGES}
+        fitness = test_rig.compute_fitness(checks, m, [])
+        weights = fitness["fitness_weights"]
+        assert weights["test_count"] == 0.5
+        assert weights["test_pass_rate"] == 0.5
+        assert weights["trivial_assert_rate"] == 0.5
+
+    def test_assertion_density_no_test_files(self, workspace: Path) -> None:
+        import test_rig
+
+        # No test files in manifest → assertion_density = 0.0
+        m = _write_manifest(workspace, {"files": ["manifest.json", "server.py"]})
+        checks = {s: {"passed": False, "duration_ms": 0} for s in test_rig.ALL_STAGES}
+        fitness = test_rig.compute_fitness(checks, m, [])
+        assert fitness["assertion_density"] == 0.0
+        assert fitness["trivial_assert_rate"] == 0.0
+
+    def test_assertion_density_computed(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "test_server.py").write_text(
+            "def test_ok():\n    assert resp.status == 200\n    assert body['ok'] is True\n\n"
+            "def test_fail():\n    assert x == 1\n"
+        )
+        m = _write_manifest(workspace, {"files": ["manifest.json", "test_server.py"]})
+        checks = {s: {"passed": False, "duration_ms": 0} for s in test_rig.ALL_STAGES}
+        fitness = test_rig.compute_fitness(checks, m, [])
+        # 3 assertions, 2 test functions → density = 1.5
+        assert fitness["assertion_density"] == pytest.approx(1.5, rel=1e-4)
+        # No trivial asserts → rate = 0.0
+        assert fitness["trivial_assert_rate"] == 0.0
+
+    def test_trivial_assert_rate_detected(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "test_bad.py").write_text(
+            "def test_trivial():\n    assert True\n    assert False\n    assert None\n\n"
+            "def test_real():\n    assert x == 1\n"
+        )
+        m = _write_manifest(workspace, {"files": ["manifest.json", "test_bad.py"]})
+        checks = {s: {"passed": False, "duration_ms": 0} for s in test_rig.ALL_STAGES}
+        fitness = test_rig.compute_fitness(checks, m, [])
+        # 4 asserts total, 3 trivial → rate = 0.75
+        assert fitness["trivial_assert_rate"] == pytest.approx(0.75, rel=1e-4)
+        # 4 asserts, 2 functions → density = 2.0
+        assert fitness["assertion_density"] == pytest.approx(2.0, rel=1e-4)
+
 
 # ---------------------------------------------------------------------------
 # Contract evaluation tests

@@ -707,7 +707,17 @@ def compute_fitness(
     manifest: dict[str, Any],
     stages_completed: list[str],
 ) -> dict[str, Any]:
-    """Compute the 15-metric fitness vector."""
+    """Compute the fitness vector.
+
+    Dimensions:
+      Speed (5): build/test/start/health/total duration_ms
+      Correctness (2): test_count, test_pass_rate  [self-referential, weight 0.5]
+      Economy (4): token_input, token_output, source_lines, dependency_count
+      Robustness (4): source_files, test_files, test_lines, assertion_density
+      Quality (1): trivial_assert_rate  [lower is better]
+      Conditional: contract_pass_rate, spec_vector_pass_rate
+      Meta: stages_completed, fitness_weights
+    """
     fitness: dict[str, Any] = {}
 
     # Duration metrics (from checks)
@@ -765,6 +775,11 @@ def compute_fitness(
     fitness["token_input"] = token_usage.get("input", 0)
     fitness["token_output"] = token_usage.get("output", 0)
 
+    # Test quality metrics (self-referential mitigation)
+    assertion_density, trivial_assert_rate = _analyze_test_quality(test_files)
+    fitness["assertion_density"] = assertion_density
+    fitness["trivial_assert_rate"] = trivial_assert_rate
+
     # Contract pass rate (absent if no contracts)
     health_result = checks.get("health", {})
     contracts_data = health_result.get("contracts")
@@ -779,6 +794,16 @@ def compute_fitness(
         total = len(sv_data)
         passed = sum(1 for v in sv_data.values() if v.get("passed"))
         fitness["spec_vector_pass_rate"] = round(passed / total, 4) if total > 0 else 1.0
+
+    # Discount weights for selection policies.
+    # Self-referential dimensions (organism controls its own tests) get weight 0.5.
+    # External dimensions (Test Rig measures them independently) get weight 1.0.
+    # trivial_assert_rate is inverted (lower is better) — consumers must account for this.
+    fitness["fitness_weights"] = {
+        "test_count": 0.5,
+        "test_pass_rate": 0.5,
+        "trivial_assert_rate": 0.5,
+    }
 
     # Stages completed
     fitness["stages_completed"] = stages_completed
@@ -801,6 +826,46 @@ def _count_lines(file_paths: list[str]) -> int:
         except OSError:
             continue
     return total
+
+
+# Matches `assert True`, `assert False`, `assert None` (trivial asserts that always pass/fail).
+_TRIVIAL_ASSERT_RE = re.compile(r"^\s*assert\s+(True|False|None)\s*(?:#.*)?$", re.MULTILINE)
+# Matches any assert statement (including compound forms).
+_ASSERT_RE = re.compile(r"^\s*assert\b", re.MULTILINE)
+# Matches test function definitions.
+_TEST_FUNC_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_", re.MULTILINE)
+
+
+def _analyze_test_quality(test_file_paths: list[str]) -> tuple[float, float]:
+    """Analyse test files and return (assertion_density, trivial_assert_rate).
+
+    assertion_density: mean assertions per test function (0.0 if no test functions).
+    trivial_assert_rate: fraction of assertions that are `assert True/False/None`
+        (0.0 if no assertions found).
+    """
+    total_asserts = 0
+    trivial_asserts = 0
+    total_funcs = 0
+
+    for rel_path in test_file_paths:
+        path = WORKSPACE / rel_path
+        if not path.exists():
+            continue
+        try:
+            raw = path.read_bytes()
+            if b"\x00" in raw[:8192]:
+                continue
+            text = raw.decode(errors="replace")
+        except OSError:
+            continue
+
+        total_asserts += len(_ASSERT_RE.findall(text))
+        trivial_asserts += len(_TRIVIAL_ASSERT_RE.findall(text))
+        total_funcs += len(_TEST_FUNC_RE.findall(text))
+
+    assertion_density = round(total_asserts / total_funcs, 4) if total_funcs > 0 else 0.0
+    trivial_assert_rate = round(trivial_asserts / total_asserts, 4) if total_asserts > 0 else 0.0
+    return assertion_density, trivial_assert_rate
 
 
 # ---------------------------------------------------------------------------

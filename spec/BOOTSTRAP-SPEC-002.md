@@ -844,9 +844,14 @@ The fitness object MUST include a `stages_completed` field: an array of stage na
 **Fitness dimensions:**
 
 - **Speed** — `build_duration_ms`, `test_duration_ms`, `start_duration_ms`, `health_duration_ms`, `total_duration_ms`. Faster organisms are cheaper to verify and reproduce.
-- **Correctness** — `test_count`, `test_pass_rate`. More tests with higher pass rates indicate more thorough self-verification.
+- **Correctness** — `test_count`, `test_pass_rate`. More tests with higher pass rates indicate more thorough self-verification. *Self-referential* — the organism generates its own tests; see discount weights below.
 - **Economy** — `token_input`, `token_output`, `source_lines`, `dependency_count`. Organisms that achieve viability with fewer tokens and less code are cheaper to reproduce.
-- **Robustness** — `test_files`, `test_lines`, test-to-source ratio (`test_lines / source_lines`). Higher testing density correlates with fewer latent bugs.
+- **Robustness** — `source_files`, `test_files`, `test_lines`. Higher testing density correlates with fewer latent bugs.
+- **Test quality** — `assertion_density`, `trivial_assert_rate`. Mitigate gaming of self-referential correctness dimensions.
+  - `assertion_density`: mean assertions per test function (regex `assert\b` / `def test_`). Higher is better — a test with no assertions verifies nothing.
+  - `trivial_assert_rate`: fraction of assertions matching `assert True/False/None`. *Lower is better* — trivial asserts inflate `test_count` and `test_pass_rate` without meaningful verification.
+
+**Discount weights:** The fitness object includes a `fitness_weights` dict. Self-referential dimensions (the organism controls what they measure) carry weight `0.5`; external dimensions (the Test Rig measures them independently) carry weight `1.0` (implicit default). Selection policies MUST multiply raw values by their weight before ranking. Current discounted dimensions: `test_count`, `test_pass_rate`, `trivial_assert_rate`.
 
 **M1 usage:** Fitness data is stored in every generation record. No automated selection occurs in M1.
 
