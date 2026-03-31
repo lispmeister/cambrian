@@ -11,6 +11,7 @@ This module has two layers:
 import asyncio
 import hashlib
 import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -178,8 +179,7 @@ async def run_campaign(
     # Fetch generation history once for context
     history: list[dict[str, Any]] = []
     try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
+        async with ClientSession() as s:
             async with s.get(f"{supervisor_url}/versions") as resp:
                 if resp.status == 200:
                     history = await resp.json()
@@ -190,12 +190,14 @@ async def run_campaign(
     async with ClientSession() as session:
         for i in range(n):
             generation = start_generation + i
-            artifact_rel = f"campaign-{campaign_id}-gen-{generation}"
+            # campaigns/{campaign_id}/gen-{N}/ — no double-prefix, isolated from M1 artifacts
+            artifact_rel = f"campaigns/{campaign_id}/gen-{generation}"
             parent = generation - 1
 
             # Step 1: Generate artifact via LLM
+            artifact_dir: Path | None = None
             try:
-                artifact_dir, _, token_usage = await prime_runner.generate_artifact(
+                artifact_dir, _, _ = await prime_runner.generate_artifact(
                     spec_text=spec_text,
                     generation=generation,
                     parent=parent,
@@ -217,6 +219,13 @@ async def run_campaign(
                 artifact_path=artifact_rel,
                 campaign_id=campaign_id,
             )
+
+            # Step 3: Clean up non-viable artifact dirs — no reason to keep them on disk
+            viable = record.get("viability", {}).get("status") == "viable"
+            if not viable and artifact_dir is not None and artifact_dir.exists():
+                shutil.rmtree(artifact_dir, ignore_errors=True)
+                log.info("artifact_dir_cleaned", generation=generation, path=str(artifact_dir))
+
             records.append(record)
             # Update history for next generation's context
             history.append(record)
@@ -224,7 +233,7 @@ async def run_campaign(
                 "campaign_generation_done",
                 campaign_id=campaign_id,
                 generation=generation,
-                viable=record.get("viability", {}).get("status") == "viable",
+                viable=viable,
             )
 
     summary = compute_campaign_summary(records)

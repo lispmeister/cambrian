@@ -14,8 +14,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import re
-import sys
-import textwrap
 from argparse import ArgumentParser
 
 import anthropic
