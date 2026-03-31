@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.13.0
+version: 0.14.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -778,9 +778,9 @@ The **Spec Mutator** is a component that reads spec variants and produces modifi
 - Every mutation produces a **complete spec**, not a diff. The diff is implicit in the git history.
 - The mutation strategy defined in this section is itself mutable in M3+. To mutate the mutation strategy, the Spec Mutator would need to modify this section — which is permitted since this section is not FROZEN. This is intentional.
 
-**Coherence screening:** Before a mutated spec enters a campaign, a fast screening model checks: (1) all MUST fields are still present in manifest and API sections, (2) FROZEN sections are unchanged (byte-for-byte), (3) the spec still describes an HTTP server on port 8401, (4) no internal contradictions between sections. Incoherent mutations are discarded without running a campaign.
+**Coherence screening:** Before a mutated spec enters a campaign, a deterministic grammar validator checks: (1) all required ## sections are still present, (2) FROZEN sections are unchanged (byte-for-byte), (3) the spec still describes an HTTP server on port 8401, (4) at least one MUST/SHALL/MAY normative keyword is present. Incoherent mutations are discarded without running a campaign. This screening is deliberately deterministic rather than LLM-based — an LLM screening its own output can learn to pass its own checks (adversarial review §5). Implemented in `supervisor/spec_grammar.py`.
 
-**Dual model:** Use the larger model (Opus) for creative mutations (Types 1-3). Use the smaller model (Sonnet) for coherence screening. This prevents one model from generating and rubber-stamping its own output.
+**LLM mutation model:** Use the larger model (Opus) for creative mutations (Types 1-3) via `CAMBRIAN_MUTATION_MODEL` (default: `claude-opus-4-6`). Budget-constrained runs may set `CAMBRIAN_MUTATION_MODEL=claude-sonnet-4-6`.
 
 ### Campaign
 
@@ -795,6 +795,7 @@ At the end of a campaign, the Supervisor computes a **campaign summary**:
 | `fitness_trend` | slope of viability across generations (linear regression on [0,1] outcomes) |
 | `failure_distribution` | count per `failure_stage` value |
 | `stages_completed_distribution` | count per maximum stage reached across attempts |
+| `generation_count` | total number of generation attempts in this campaign |
 
 **Campaign as unit of selection:** In M2, the spec is judged by its campaign summary, not any single generation. A spec that produces 80% viability over 5 generations is better than one that produces 1 perfect generation and 4 failures. Consistency matters more than peak performance. A positive `fitness_trend` rewards specs that "teach well" — where the LLM improves across retries within the campaign.
 
@@ -821,6 +822,8 @@ Maximum archive capacity: 5 × 4 × 4 × 3 = 240 cells. In practice, the archive
 - Type 3 (restructuring): select the cell with the longest plateau (same spec for ≥3 campaigns with flat trend)
 
 **Why MAP-Elites over hill-climbing:** A spec optimal for the current task (echo server) may fail on future tasks. The archive preserves all behavioral niches, not just the current winner. When a new task tier activates (see Test Tiers below), archived variants from different niches provide a diverse starting population.
+
+**Stage 1 implementation note (M2 Stage 1):** MAP-Elites requires 200+ evaluations to populate meaningfully. Stage 1 has budget for ~20-30 campaigns. For Stage 1, the archive is replaced by a **single-objective Bayesian Optimization loop** (Gaussian Process + Expected Improvement via scikit-optimize) that maximizes `viability_rate`. The feature space is per-section line-delta from the base spec (one Real dimension per evolvable section). MAP-Elites activates in Stage 2+ when the evaluation budget supports it. Implemented in `supervisor/bo_loop.py`.
 
 ### Meta-Monitor
 
@@ -859,7 +862,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.13.0"
+version: "0.14.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
