@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.9.1
+version: 0.10.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -383,8 +383,17 @@ uv run python -m supervisor.supervisor
 
 ```
 supervisor/
-  supervisor.py      — HTTP server, container lifecycle, git operations
-  test_supervisor.py — Unit tests for API endpoints and git operations
+  supervisor.py        — HTTP server, container lifecycle, git operations
+  generations.py       — Append-only generation record store
+  git_ops.py           — Git operations on the artifacts repository
+  campaign.py          — Campaign runner, mini-campaign screener (M2)
+  spec_grammar.py      — Deterministic spec grammar validation (M2)
+  spec_diff.py         — Section-level spec diff + fitness attribution (M2)
+  spec_mutator.py      — Type 1 LLM-backed spec mutation (M2)
+  bo_loop.py           — Bayesian optimization loop over spec mutations (M2)
+  entanglement.py      — Spec modularity / entanglement monitor (M2)
+  adaptive_tests.py    — Adaptive Tier X test generation (M2)
+  test_supervisor.py   — Unit tests for all supervisor modules
 ```
 
 ## 2. Test Rig
@@ -1497,8 +1506,17 @@ After bootstrap is complete, two sibling repos exist:
 ```
 cambrian/                       ← project repo (this repo)
   supervisor/
-    supervisor.py               — Supervisor HTTP server
-    test_supervisor.py          — Supervisor unit tests
+    supervisor.py               — HTTP server, container lifecycle, git operations
+    generations.py              — Append-only generation record store
+    git_ops.py                  — Git operations on the artifacts repository
+    campaign.py                 — Campaign runner, mini-campaign screener (M2)
+    spec_grammar.py             — Deterministic spec grammar validation (M2)
+    spec_diff.py                — Section-level spec diff + fitness attribution (M2)
+    spec_mutator.py             — Type 1 LLM-backed spec mutation (M2)
+    bo_loop.py                  — Bayesian optimization loop over spec mutations (M2)
+    entanglement.py             — Spec modularity / entanglement monitor (M2)
+    adaptive_tests.py           — Adaptive Tier X test generation (M2)
+    test_supervisor.py          — Unit tests for all supervisor modules
   test-rig/
     test_rig.py                 — Test Rig verification pipeline
     test_test_rig.py            — Test Rig unit tests
@@ -1513,7 +1531,7 @@ cambrian/                       ← project repo (this repo)
     archive/                    — Superseded specs (SPEC-001 through 004, BOOTSTRAP-SPEC-001)
   lab-journal/
     journal-*.md                — Discussion and decision logs
-  pyproject.toml                — Project metadata, dependencies, tool configs (ruff, pyright)
+  pyproject.toml                — Project metadata, dependencies, tool configs (ruff, pyright); includes scikit-optimize for the M2 BO loop
   uv.lock                       — Locked dependency versions (committed)
   .venv/                        — Host-side virtual environment (not committed)
   .env                          — ANTHROPIC_API_KEY (not committed)
@@ -1536,6 +1554,8 @@ cambrian-artifacts/             ← artifacts repo (CAMBRIAN_ARTIFACTS_ROOT, sep
 
 All configuration is via environment variables on the host.
 
+### M1 Variables
+
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `ANTHROPIC_API_KEY` | MUST | — | LLM API key, forwarded to containers |
@@ -1544,6 +1564,45 @@ All configuration is via environment variables on the host.
 | `CAMBRIAN_DOCKER_IMAGE` | MAY | `cambrian-base` | Docker image name |
 | `CAMBRIAN_ARTIFACTS_ROOT` | MAY | `../cambrian-artifacts` | Path to artifacts repository (separate git repo) |
 | `CAMBRIAN_CONTAINER_TIMEOUT` | MAY | `600` | Max seconds to wait for the Test Rig container to exit. On timeout, container is killed and generation record is set to `outcome: timeout`. |
+
+### M2 Variables
+
+These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2`).
+
+**Campaign runner (`campaign.py`):**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_CAMPAIGN_LENGTH` | MAY | `5` | Number of generations per campaign. |
+| `CAMBRIAN_MINI_CAMPAIGN_N` | MAY | `2` | Number of generations in a mini-campaign pre-screen. |
+| `CAMBRIAN_CAMPAIGN_POLL_INTERVAL` | MAY | `2.0` | Seconds between generation status polls during a campaign. |
+
+**Spec mutator (`spec_mutator.py`):**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_MUTATION_MODEL` | MAY | → `CAMBRIAN_ESCALATION_MODEL` → `claude-opus-4-6` | LLM model for Type 1 spec mutations. |
+| `CAMBRIAN_MUTATION_MAX_TOKENS` | MAY | `8192` | Max tokens for mutation LLM call. |
+| `CAMBRIAN_MUTATION_MAX_ATTEMPTS` | MAY | `3` | Max grammar-validation retry attempts per mutation. |
+
+**Bayesian optimization loop (`bo_loop.py`):**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_BO_BUDGET` | MAY | `20` | Total BO iterations (full campaigns). |
+| `CAMBRIAN_BO_INITIAL_POINTS` | MAY | `5` | Random exploration points before GP-EI acquisition. |
+| `CAMBRIAN_BO_DIM_RANGE` | MAY | `100.0` | Feature dimension range for the skopt Real space (±N lines). |
+| `CAMBRIAN_SCREEN_THRESHOLD` | MAY | `1` | Minimum viable generations in mini-campaign to proceed to full campaign. |
+
+**Adaptive test generation (`adaptive_tests.py`):**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_ADAPTIVE_EXPIRE_AFTER` | MAY | `5` | Campaigns before an adaptive test expires. |
+| `CAMBRIAN_ADAPTIVE_MAX_ACTIVE` | MAY | `10` | Maximum active adaptive tests at any time. |
+| `CAMBRIAN_ADAPTIVE_TESTS_PER_GENERATION` | MAY | `4` | Test cases to generate per failed campaign. |
+| `CAMBRIAN_ADAPTIVE_MODEL` | MAY | → `CAMBRIAN_ESCALATION_MODEL` → `claude-sonnet-4-6` | LLM model for adaptive test generation. |
+| `CAMBRIAN_ADAPTIVE_MAX_TOKENS` | MAY | `2048` | Max tokens for adaptive test generation LLM call. |
 
 ## 9. Failure Modes
 
@@ -1554,7 +1613,7 @@ All configuration is via environment variables on the host.
 | Port 8400 in use | Supervisor bind fails | Fatal error. Message: "Port 8400 is already in use" |
 | Port 8401 in use inside container | Test artifact or Prime bind fails | Test Rig reports `failure_stage: start` |
 | ANTHROPIC_API_KEY missing | Env var not set | Fatal error on Supervisor startup. Message: "ANTHROPIC_API_KEY is required" |
-| Docker image not built | `await client.images.inspect("cambrian-base")` raises `DockerError` (404) | `/spawn` returns `{"ok": false, "error": "Docker image cambrian-base not found. Run docker/build.sh"}` |
+| Docker image not built | `await client.images.list()` returns no entry matching the image tag | `/spawn` returns `{"ok": false, "error": "Docker image cambrian-base not found. Run docker/build.sh"}` |
 | Artifact path doesn't exist | `/spawn` with invalid path | `{"ok": false, "error": "Artifact path does not exist: /path"}` |
 | Container fails to start | `await client.containers.create_or_replace()` raises `DockerError` | `{"ok": false, "error": "Container creation failed: ..."}` |
 | Viability report missing | Container exits without writing report | Generation record: `outcome: failed`, viability: `null`. Container logs are still captured for debugging. |
@@ -1636,7 +1695,7 @@ All configuration is via environment variables on the host.
 
 ```yaml
 spec-version: "002"
-version: "0.9.1"
+version: "0.10.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
