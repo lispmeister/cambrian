@@ -35,7 +35,7 @@ These rules are absolute. They define what it means to be Prime. In M2, the Spec
 - **Artifact** — A directory containing a complete generated codebase: source files, test suite, spec copy, and `manifest.json`. Produced by Prime. Immutable once written.
 - **Manifest** — `manifest.json` at the artifact root. The fixed-point contract between organism and environment. Describes how to build, test, and start Prime.
 - **Generation** — One attempt to produce a viable artifact. Each gets a monotonically increasing number, a git branch (`gen-N`), and an audit record.
-- **Viability Report** — Structured JSON written by the Test Rig at `/workspace/viability-report.json`. Binary outcome: `viable` or `non-viable`. Read by Prime via the generation record.
+- **Viability Report** — Structured JSON written by the Test Rig at `/output/viability-report.json` (see BOOTSTRAP-SPEC-002 §2.12 — the `/output` mount is separate from `/workspace` to prevent organism code from predicting or overwriting the report). Binary outcome: `viable` or `non-viable`. Read by Prime via the generation record.
 - **Hash** — All hash values in Cambrian use the format `sha256:<64 hex characters>`. The `sha256:` prefix is literal text, not a URL scheme. Example: `sha256:a3b4c5...ef` (exactly 64 hex chars after the colon). An LLM MUST include this prefix when generating hash fields.
 
 ## Problem Statement
@@ -186,7 +186,7 @@ The null byte separator (`b"\0"`) between `path_bytes` and `file_bytes` is criti
 
 ### Viability Report (Prime reads this)
 
-Written by the Test Rig at `/workspace/viability-report.json`. The Supervisor returns it in the generation record.
+Written by the Test Rig at `/output/viability-report.json` (the `/output` bind-mount is separate from `/workspace` — see BOOTSTRAP-SPEC-002 §2.12). The Supervisor reads it from the host-side temp directory and returns it in the generation record.
 
 ```json
 {

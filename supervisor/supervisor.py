@@ -141,6 +141,19 @@ async def handle_spawn(request: web.Request) -> web.Response:
     if not spec_hash:
         return web.json_response({"ok": False, "error": "spec-hash is required"}, status=400)
 
+    # BOOTSTRAP-SPEC-002 §1.3: generation MUST be >= 1
+    if generation < 1:
+        return web.json_response(
+            {"ok": False, "error": "generation must be >= 1"}, status=400
+        )
+
+    # Guard against duplicate spawns — two requests for the same generation would
+    # race on git branch creation and append two records.
+    if generations.get(generation) is not None:
+        return web.json_response(
+            {"ok": False, "error": f"generation {generation} already exists"}, status=409
+        )
+
     artifacts_root = git_ops.artifacts_root()
     artifact_path = (Path(artifacts_root) / artifact_rel).resolve()
 

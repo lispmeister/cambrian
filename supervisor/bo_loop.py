@@ -26,7 +26,8 @@ from skopt.space import Real
 
 from .adaptive_tests import expire_old_tests, generate_adaptive_tests
 from .campaign import run_campaign
-from .spec_diff import parse_sections
+from .entanglement import EntanglementReport, compute_entanglement_report, entanglement_alert
+from .spec_diff import SpecDiff, diff_spec, parse_sections
 from .spec_grammar import evolvable_sections
 from .spec_mutator import propose_target_section, type1_mutate
 
@@ -173,6 +174,8 @@ class SpecBOLoop:
 
         self.observations: list[BOObservation] = []
         self._generation_counter = start_generation
+        # Accumulated SpecDiff objects — one per successful mutation — for entanglement monitoring.
+        self._spec_diffs: list[SpecDiff] = []
 
     async def run(self) -> BOResult:
         """Execute the BO loop up to self.budget iterations.
@@ -237,6 +240,9 @@ class SpecBOLoop:
 
             features = extract_features(mutated, self.section_names, self.base_spec_text)
 
+            # Accumulate diff for entanglement monitoring
+            self._spec_diffs.append(diff_spec(self.base_spec_text, mutated))
+
             obs = await self._evaluate_spec(
                 mutated, features=features, target_section=target_section,
                 campaign_index=campaign_index,
@@ -248,7 +254,27 @@ class SpecBOLoop:
                 # Mutation was screened out — tell BO it scored 0
                 self.optimizer.tell(features, 1.0)
 
+            # Check entanglement every 5 iterations once we have enough data
+            if len(self._spec_diffs) >= 2 and iteration % 5 == 0:
+                self._check_entanglement(mutated)
+
         return self._make_result()
+
+    def _check_entanglement(self, current_spec_text: str) -> None:
+        """Compute and log the entanglement report; alert if is_entangling."""
+        report: EntanglementReport = compute_entanglement_report(
+            self._spec_diffs, spec_text=current_spec_text
+        )
+        log.info(
+            "entanglement_report",
+            mutation_count=report.mutation_count,
+            mean_sections_per_mutation=report.mean_sections_per_mutation,
+            entanglement_trend=report.entanglement_trend,
+            is_entangling=report.is_entangling,
+        )
+        alert = entanglement_alert(report)
+        if alert:
+            log.warning("entanglement_alert", message=alert)
 
     async def _evaluate_spec(
         self,

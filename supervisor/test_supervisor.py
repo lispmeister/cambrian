@@ -275,6 +275,65 @@ async def test_spawn_empty_spec_hash_rejected(
 
 
 @pytest.mark.asyncio
+async def test_spawn_generation_zero_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    """generation=0 is reserved for hand-crafted test artifacts — LLM-generated must be >= 1."""
+    resp = await client.post(
+        "/spawn",
+        json={"generation": 0, "artifact-path": "gen-0", "spec-hash": "sha256:" + "a" * 64},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+    assert "generation" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_generation_negative_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    resp = await client.post(
+        "/spawn",
+        json={"generation": -1, "artifact-path": "gen-neg", "spec-hash": "sha256:" + "a" * 64},
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_spawn_duplicate_generation_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    """Second spawn for same generation number returns 409 Conflict."""
+    from supervisor import generations as gen_store
+    from supervisor import git_ops
+
+    # Inject an existing record for generation 7
+    gen_store.append({"generation": 7, "outcome": "in_progress"})
+    try:
+        resp = await client.post(
+            "/spawn",
+            json={"generation": 7, "artifact-path": "gen-7", "spec-hash": "sha256:" + "a" * 64},
+        )
+        assert resp.status == 409
+        data = await resp.json()
+        assert data["ok"] is False
+        assert "7" in data["error"]
+    finally:
+        # Clean up injected record
+        all_records = gen_store.load_all()
+        remaining = [r for r in all_records if r.get("generation") != 7]
+        gen_file = Path(git_ops.artifacts_root()) / "generations.json"
+        if gen_file.exists():
+            gen_file.write_text(json.dumps(remaining))
+
+
+@pytest.mark.asyncio
 async def test_spawn_missing_artifact_path(
     client: TestClient,
     artifacts_root: Path,
@@ -706,6 +765,24 @@ class TestComputeCampaignSummary:
         assert dist["health"] == 1
         assert dist["build"] == 1
         assert dist["test"] == 1
+
+    def test_stages_completed_absent_fitness(self) -> None:
+        """Infrastructure error records have no fitness key — should default to 'none'."""
+        from supervisor.campaign import compute_campaign_summary
+
+        # Simulate _make_error_viability output (no fitness object)
+        record = {
+            "generation": 1,
+            "outcome": "tested",
+            "viability": {
+                "status": "non-viable",
+                "failure_stage": "health",
+                "checks": {},
+                "diagnostics": {"summary": "container crashed"},
+            },
+        }
+        summary = compute_campaign_summary([record])
+        assert summary["stages_completed_distribution"] == {"none": 1}
 
 
 class TestLinearSlope:
