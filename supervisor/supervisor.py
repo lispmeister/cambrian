@@ -198,7 +198,7 @@ async def handle_spawn(request: web.Request) -> web.Response:
     # Create branch and commit artifact in artifacts repo before starting container.
     # create_generation_branch holds _git_lock for the entire sequence.
     try:
-        await git_ops.create_generation_branch(generation)
+        await git_ops.create_generation_branch(generation, artifact_rel)
     except git_ops.GitError as e:
         _set_status("idle")
         return web.json_response({"ok": False, "error": f"Git error: {e}"}, status=500)

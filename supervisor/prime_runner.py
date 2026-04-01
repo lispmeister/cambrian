@@ -24,7 +24,8 @@ import structlog
 log = structlog.get_logger(component="prime_runner")
 
 _DEFAULT_MODEL = os.environ.get("CAMBRIAN_MODEL", "claude-sonnet-4-6")
-_MAX_TOKENS = int(os.environ.get("CAMBRIAN_TOKEN_BUDGET", "32768"))
+_ESCALATION_MODEL = os.environ.get("CAMBRIAN_ESCALATION_MODEL", "claude-opus-4-6")
+_PER_CALL_MAX_TOKENS = 32768  # Fixed per-call limit; CAMBRIAN_TOKEN_BUDGET is cumulative (deferred)
 _MAX_PARSE_RETRIES = int(os.environ.get("CAMBRIAN_MAX_PARSE_RETRIES", "3"))
 
 SYSTEM_PROMPT = """\
@@ -122,7 +123,7 @@ def _write_manifest(
         "files": files,
         "created-at": datetime.now(UTC).isoformat(),
         "entry": {
-            "build": "pip install -r requirements.txt",
+            "build": "uv pip install -r requirements.txt",
             "test": "python -m pytest tests/ -v",
             "start": "python -m src.prime",
             "health": "http://localhost:8401/health",
@@ -207,17 +208,18 @@ async def generate_artifact(
     token_usage: dict[str, int] = {"input": 0, "output": 0}
 
     for attempt in range(1, _MAX_PARSE_RETRIES + 1):
+        call_model = _ESCALATION_MODEL if attempt > 1 else model
         prompt = _build_prompt(spec_text, history, generation, parent, failed_context)
 
         log.info(
             "prime_runner_llm_call",
             generation=generation,
             attempt=attempt,
-            model=model,
+            model=call_model,
         )
         async with client.messages.stream(
-            model=model,
-            max_tokens=_MAX_TOKENS,
+            model=call_model,
+            max_tokens=_PER_CALL_MAX_TOKENS,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
@@ -259,7 +261,7 @@ async def generate_artifact(
             artifact_hash=artifact_hash,
             files=["manifest.json"] + all_files,
             token_usage=token_usage,
-            model=model,
+            model=call_model,
         )
 
         log.info(

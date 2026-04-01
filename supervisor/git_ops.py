@@ -45,8 +45,8 @@ async def git(*args: str) -> str:
     return stdout.decode().strip()
 
 
-async def create_generation_branch(generation: int) -> None:
-    """Checkout main, create gen-N branch, stage all files, and commit.
+async def create_generation_branch(generation: int, artifact_path: str = ".") -> None:
+    """Checkout main, create gen-N branch, stage artifact files, and commit.
 
     Called from handle_spawn. Holds _git_lock for the entire sequence to
     prevent concurrent spawns from racing on branch creation and checkout.
@@ -56,7 +56,7 @@ async def create_generation_branch(generation: int) -> None:
         if current != "main":
             await git("checkout", "main")
         await git("checkout", "-b", f"gen-{generation}")
-        await git("add", "-A")
+        await git("add", "-A", artifact_path)
         await git(
             "commit",
             "--allow-empty",
@@ -83,17 +83,19 @@ async def promote(generation: int, artifact_path: Path) -> str:
 async def rollback(generation: int) -> str:
     """Tag failed artifact, delete branch. Returns tag name."""
     branch = f"gen-{generation}"
-    base_tag = f"gen-{generation}-failed"
+    tag = f"gen-{generation}-failed"
 
     async with _git_lock:
-        existing_tags = (await git("tag", "-l", f"{base_tag}*")).splitlines()
-        if existing_tags:
-            tag = f"{base_tag}-{len(existing_tags) + 1}"
-        else:
-            tag = base_tag
+        existing = await git("tag", "-l", tag)
+        if existing:
+            log.warning(
+                "rollback_tag_exists",
+                tag=tag,
+                msg="overwriting; each retry should have a unique generation number",
+            )
 
         try:
-            await git("tag", "-a", tag, branch, "-m", f"Generation {generation} failed")
+            await git("tag", "-fa", tag, branch, "-m", f"Generation {generation} failed")
         except GitError:
             pass
 
