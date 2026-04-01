@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.14.1
+version: 0.14.2
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -136,12 +136,12 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
   "artifact-hash": "sha256:...",
   "producer-model": "claude-opus-4-6",
   "token-usage": {"input": 45000, "output": 12000},
-  "files": ["src/prime.py", "tests/test_prime.py", "manifest.json", "spec/CAMBRIAN-SPEC-005.md"],
+  "files": ["src/__init__.py", "src/prime.py", "tests/test_prime.py", "manifest.json", "spec/CAMBRIAN-SPEC-005.md"],
   "created-at": "2026-03-23T12:00:00Z",
   "entry": {
     "build": "uv pip install -r requirements.txt",
     "test": "python -m pytest tests/ -v",
-    "start": "python src/prime.py",
+    "start": "python -m src.prime",
     "health": "http://localhost:8401/health"
   },
   "contracts": [
@@ -157,7 +157,9 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 
 **Field naming convention:** All JSON field names in manifests, generation records, and API bodies use kebab-case (hyphens). Python code uses snake_case internally. The canonical wire format is kebab-case.
 
-**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 0; 0 is reserved for hand-crafted test artifacts, LLM-generated artifacts MUST use >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json` and the spec file), `created-at` (ISO-8601), `entry.build`, `entry.test`, `entry.start` (SHOULD use `python path/to/script.py` syntax, NOT `python -m module.path` — the `-m` form requires `__init__.py` files and breaks in containers without proper package structure), `entry.health`.
+**MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 0; 0 is reserved for hand-crafted test artifacts, LLM-generated artifacts MUST use >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json`, the spec file, and `src/__init__.py`), `created-at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
+
+**`entry.start` — module form required.** When source lives under a package directory (e.g. `src/`), the start command MUST use `python -m src.prime`, not `python src/prime.py`. The script form adds the script's own directory to `sys.path`, so `from src.loop import …` fails at runtime even though pytest (which adds the working directory to `sys.path` automatically) passes it. The module form adds the working directory (`/workspace`) instead, making both absolute (`from src.loop import …`) and relative (`from .loop import …`) intra-package imports work correctly. The `src/` package directory MUST contain an `__init__.py` file (may be empty).
 
 **`artifact-hash` algorithm** — this MUST be implemented exactly or hash verification will fail:
 
@@ -485,6 +487,7 @@ Prime MUST be ready to serve `/health` before starting generation. The Test Rig 
 
 ```
 src/
+  __init__.py       — required; makes src/ a package so `python -m src.prime` works
   prime.py          — entry point, HTTP server, main loop
   generate.py       — LLM integration: prompt building, API calls, response parsing
   supervisor.py     — Supervisor API client
@@ -862,7 +865,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.14.1"
+version: "0.14.2"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
