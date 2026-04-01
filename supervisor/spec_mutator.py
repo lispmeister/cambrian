@@ -32,7 +32,7 @@ _DEFAULT_MUTATION_MODEL = os.environ.get(
 )
 
 # Maximum tokens for the LLM to generate the mutated spec.
-_MAX_TOKENS = int(os.environ.get("CAMBRIAN_MUTATION_MAX_TOKENS", "8192"))
+_MAX_TOKENS = int(os.environ.get("CAMBRIAN_MUTATION_MAX_TOKENS", "32768"))
 
 # Maximum mutation attempts before giving up.
 _MAX_ATTEMPTS = int(os.environ.get("CAMBRIAN_MUTATION_MAX_ATTEMPTS", "3"))
