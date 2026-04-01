@@ -19,7 +19,7 @@ ENV PATH="/venv/bin:$PATH"
 RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp pyyaml
 
 # Create a non-root user — the Test Rig should not run as root
-RUN useradd -m -s /bin/bash cambrian
+RUN useradd -m -s /bin/bash cambrian && chown -R cambrian:cambrian /venv
 
 # Bake in the Test Rig
 COPY test-rig/ /test-rig/
