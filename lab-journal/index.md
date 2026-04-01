@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-01
-**Total entries:** 21 (plus this index)
+**Total entries:** 22 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -30,6 +30,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-03-31f  | [journal-2026-03-31f.md](journal-2026-03-31f.md) | P1/P2/P3 bug sprint: 13 beads closed; artifact-hash, promote/rollback, adaptive_tests, entanglement, file locking, git lock, completed timestamp | 159/160 beads closed; M2-ready |
 | 2026-03-31g  | [journal-2026-03-31g.md](journal-2026-03-31g.md) | M2 first run attempt; streaming bug fix (3 files); full spec compliance audit: 11 Tier 1 bugs, 5 Tier 2 gaps, 17 new beads | cambrian-9kn, cambrian-i8o; spec audit |
 | 2026-04-01   | [journal-2026-04-01.md](journal-2026-04-01.md) | Fix 5 P1 spec bugs: token budget semantics, model escalation, uv pip, rollback tag suffixing, scoped git add | cambrian-2sg, cambrian-5tym, cambrian-7djj, cambrian-pom1, cambrian-h4j3 |
+| 2026-04-01   | [journal-2026-04-01-summary.md](journal-2026-04-01-summary.md) | **Summary**: project arc, architectural insights, recurring bug patterns, key decisions, anti-cheating layers, test evolution, budget, process lessons | All sessions Mar 21 - Apr 01 |
 
 ---
 
