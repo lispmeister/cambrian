@@ -97,10 +97,12 @@ async def handle_stats(request: web.Request) -> web.Response:
 
     Note: `status` here is the Supervisor's own state (idle/spawning/testing/…),
     NOT the latest generation record's `outcome`. Do not derive one from the other.
+    `generation` is the highest completed generation number (0 if none).
     """
+    _TERMINAL = {"promoted", "failed", "timeout"}
     records = generations.load_all()
-    latest = records[-1] if records else None
-    latest_gen = int(latest.get("generation", 0)) if latest else 0
+    completed = [r for r in records if r.get("outcome") in _TERMINAL]
+    latest_gen = max((int(r.get("generation", 0)) for r in completed), default=0)
     uptime = int(time.time() - _start_time)
     return web.json_response(
         {
@@ -217,18 +219,16 @@ async def handle_spawn(request: web.Request) -> web.Response:
         except Exception as e:
             log.warning("artifact_hash_failed", generation=generation, error=str(e))
 
-    # Record in-progress state
+    # Record in-progress state — MAY fields (artifact-ref, completed, viability)
+    # are absent while in_progress, per spec.
     record: dict[str, Any] = {
         "generation": generation,
         "parent": generation - 1,
         "spec-hash": spec_hash,
         "artifact-hash": artifact_hash,
         "outcome": "in_progress",
-        "artifact-ref": f"gen-{generation}",
         "created": datetime.now(UTC).isoformat(),
-        "completed": None,
         "container-id": container_id,
-        "viability": None,
     }
     if campaign_id:
         record["campaign-id"] = campaign_id
@@ -255,6 +255,12 @@ async def handle_promote(request: web.Request) -> web.Response:
         return web.json_response(
             {"ok": False, "error": f"Generation {generation} not found"}, status=404
         )
+    if record.get("outcome") != "tested":
+        _set_status("idle")
+        return web.json_response(
+            {"ok": False, "error": f"Generation {generation} is not in tested state"},
+            status=409,
+        )
 
     artifact_rel = record.get("artifact-ref", f"gen-{generation}")
     artifact_path = Path(git_ops.artifacts_root()) / artifact_rel
@@ -276,6 +282,19 @@ async def handle_rollback(request: web.Request) -> web.Response:
     generation = int(body["generation"])
 
     _set_status("rolling-back", generation)
+    record = generations.get(generation)
+    if not record:
+        _set_status("idle")
+        return web.json_response(
+            {"ok": False, "error": f"Generation {generation} not found"}, status=404
+        )
+    if record.get("outcome") != "tested":
+        _set_status("idle")
+        return web.json_response(
+            {"ok": False, "error": f"Generation {generation} is not in tested state"},
+            status=409,
+        )
+
     try:
         tag = await git_ops.rollback(generation)
     except git_ops.GitError as e:
@@ -441,6 +460,13 @@ def make_app() -> web.Application:
     return app
 
 
+async def _startup() -> None:
+    """Initialize artifacts repo and generation store before the server starts."""
+    await git_ops.ensure_repo()
+    generations.load_all()  # creates generations.json if absent (handled lazily)
+    log.info("supervisor_ready", port=PORT, artifacts_root=git_ops.artifacts_root())
+
+
 def main() -> None:
     global _start_time
     _require_env("ANTHROPIC_API_KEY")
@@ -454,8 +480,9 @@ def main() -> None:
         ]
     )
 
-    log.info("supervisor_ready", port=PORT, artifacts_root=git_ops.artifacts_root())
-    web.run_app(make_app(), host="0.0.0.0", port=PORT)
+    app = make_app()
+    app.on_startup.append(lambda _: _startup())
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":

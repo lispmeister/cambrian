@@ -167,6 +167,9 @@ class TestAPIResponseSchemas:
         self, client: TestClient, artifacts_root: Path
     ) -> None:
         """POST /rollback success must return {ok: true, generation: int}."""
+        from supervisor import generations
+
+        generations.append({"generation": 1, "outcome": "tested", "artifact-ref": "gen-1"})
         resp = await client.post("/rollback", json={"generation": 1})
         data = await resp.json()
         assert data["ok"] is True
@@ -596,7 +599,7 @@ class TestWireFormatFieldNaming:
         # These fields MUST be kebab-case per spec
         assert "spec-hash" in rec
         assert "artifact-hash" in rec
-        assert "artifact-ref" in rec
+        # artifact-ref is absent while in_progress (MAY field per spec §4.3)
         assert "container-id" in rec
         # These must NOT appear in snake_case
         assert "spec_hash" not in rec

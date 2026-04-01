@@ -26,7 +26,7 @@ log = structlog.get_logger(component="prime_runner")
 _DEFAULT_MODEL = os.environ.get("CAMBRIAN_MODEL", "claude-sonnet-4-6")
 _ESCALATION_MODEL = os.environ.get("CAMBRIAN_ESCALATION_MODEL", "claude-opus-4-6")
 _PER_CALL_MAX_TOKENS = 32768  # Fixed per-call limit; CAMBRIAN_TOKEN_BUDGET is cumulative (deferred)
-_MAX_PARSE_RETRIES = int(os.environ.get("CAMBRIAN_MAX_PARSE_RETRIES", "3"))
+_MAX_PARSE_RETRIES = int(os.environ.get("CAMBRIAN_MAX_PARSE_RETRIES", "2"))
 
 SYSTEM_PROMPT = """\
 You are a code generator. You produce complete, working Python codebases from specifications.
@@ -102,6 +102,23 @@ def _compute_spec_hash(spec_text: str) -> str:
     return f"sha256:{hashlib.sha256(spec_text.encode()).hexdigest()}"
 
 
+def _extract_contracts(spec_text: str) -> list[dict[str, Any]] | None:
+    """Extract the contracts JSON array from a ```contracts fenced block in spec_text.
+
+    Per CAMBRIAN-SPEC-005 §6: if the spec contains a JSON array under a fenced code
+    block marked with 'contracts', include it verbatim as the manifest contracts field.
+    Returns None if no such block is found or the content isn't valid JSON.
+    """
+    m = re.search(r"```contracts\s*\n(.*?)```", spec_text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1).strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, list) else None
+
+
 def _write_manifest(
     artifact_dir: Path,
     generation: int,
@@ -111,8 +128,9 @@ def _write_manifest(
     files: list[str],
     token_usage: dict[str, int],
     model: str,
+    spec_text: str,
 ) -> None:
-    manifest = {
+    manifest: dict[str, Any] = {
         "cambrian-version": 1,
         "generation": generation,
         "parent-generation": parent,
@@ -125,10 +143,13 @@ def _write_manifest(
         "entry": {
             "build": "uv pip install -r requirements.txt",
             "test": "python -m pytest tests/ -v",
-            "start": "python -m src.prime",
+            "start": "python src/prime.py",
             "health": "http://localhost:8401/health",
         },
     }
+    contracts = _extract_contracts(spec_text)
+    if contracts is not None:
+        manifest["contracts"] = contracts
     (artifact_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
 
@@ -144,10 +165,10 @@ def _build_prompt(
     parent: int,
     failed_context: dict[str, Any] | None = None,
 ) -> str:
-    history_json = json.dumps(history[-3:], indent=2)  # last 3 records for context
+    history_json = json.dumps(history, indent=2)
     base = (
         f"# Specification\n\n{spec_text}\n\n"
-        f"# Generation History (recent)\n\n{history_json}\n\n"
+        f"# Generation History\n\n{history_json}\n\n"
         f"# Task\n\n"
         f"Produce a complete working codebase that implements the specification above.\n"
         f"Generation number: {generation}\n"
@@ -157,12 +178,53 @@ def _build_prompt(
         diagnostics = failed_context.get("diagnostics", {})
         stage = diagnostics.get("stage", "unknown")
         summary = diagnostics.get("summary", "")
+        artifact_dir: Path | None = failed_context.get("artifact_dir")
+
         base += (
             f"\n# Previous Attempt Failed\n\n"
-            f"Stage: {stage}\nSummary: {summary}\n"
-            f"Fix the issues and try again.\n"
+            f"Generation {generation - 1} failed at stage: {stage}\n"
+            f"Summary: {summary}\n"
+        )
+
+        if artifact_dir is not None and artifact_dir.exists():
+            base += "\n## Failed Source Code\n\n"
+            for src_file in sorted(artifact_dir.rglob("*")):
+                if not src_file.is_file():
+                    continue
+                rel = src_file.relative_to(artifact_dir)
+                name = str(rel)
+                if name in ("manifest.json",) or name.startswith("spec/"):
+                    continue
+                suffix = src_file.suffix.lstrip(".")
+                try:
+                    content = src_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                base += f"### {name}\n```{suffix}\n{content}\n```\n\n"
+
+        base += f"\n## Diagnostics\n\n{json.dumps(diagnostics, indent=2)}\n\n"
+        base += (
+            "# Task\n\n"
+            "The previous attempt failed. Study the failed code and diagnostics above.\n"
+            "Produce a complete, corrected codebase that fixes the identified issues.\n"
+            f"Generation number: {generation}\n"
+            f"Parent generation: {parent}\n"
         )
     return base
+
+
+def _build_parse_repair_prompt(raw: str, error: str) -> str:
+    return (
+        f"# Parse Error\n\n"
+        f"The previous response could not be parsed. Error: {error}\n\n"
+        f"# Malformed Response\n\n"
+        f"{raw}\n\n"
+        f"# Task\n\n"
+        f"Re-emit the EXACT SAME files using the correct format. "
+        f"Every <file> block MUST have a\n"
+        f"matching </file:end> on its own line. No nesting. "
+        f"No extra content between blocks."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +250,7 @@ async def generate_artifact(
         generation: Target generation number.
         parent: Parent generation number.
         artifacts_root: Root of the artifacts repo.
-        history: Recent generation records for context (optional).
+        history: Generation records for context (optional, full history passed).
         artifact_rel: Relative path within artifacts_root (default: gen-{generation}).
         model: LLM model to use (default: CAMBRIAN_MODEL env var).
 
@@ -228,11 +290,47 @@ async def generate_artifact(
         token_usage["output"] += response.usage.output_tokens
 
         raw = response.content[0].text
-        try:
-            files = parse_files(raw)
-        except ParseError as e:
-            log.warning("prime_runner_parse_error", attempt=attempt, error=str(e))
-            failed_context = {"diagnostics": {"stage": "parse", "summary": str(e)}}
+
+        # Parse with in-place repair loop (does not consume a generation retry).
+        files: dict[str, str] | None = None
+        parse_error: str | None = None
+        repair_raw = raw
+        for repair_attempt in range(_MAX_PARSE_RETRIES + 1):
+            try:
+                files = parse_files(repair_raw)
+                break
+            except ParseError as e:
+                parse_error = str(e)
+                if repair_attempt == _MAX_PARSE_RETRIES:
+                    break
+                log.warning(
+                    "prime_runner_parse_error",
+                    attempt=attempt,
+                    repair_attempt=repair_attempt + 1,
+                    error=parse_error,
+                )
+                repair_prompt = _build_parse_repair_prompt(repair_raw, parse_error)
+                async with client.messages.stream(
+                    model=call_model,
+                    max_tokens=_PER_CALL_MAX_TOKENS,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": repair_prompt}],
+                ) as repair_stream:
+                    repair_response = await repair_stream.get_final_message()
+                token_usage["input"] += repair_response.usage.input_tokens
+                token_usage["output"] += repair_response.usage.output_tokens
+                repair_raw = repair_response.content[0].text
+
+        if files is None:
+            log.warning(
+                "prime_runner_parse_failed_all_repairs",
+                attempt=attempt,
+                error=parse_error,
+            )
+            failed_context = {
+                "diagnostics": {"stage": "parse", "summary": parse_error or "parse failed"},
+                "artifact_dir": artifact_dir,
+            }
             continue
 
         # Write source files
@@ -262,6 +360,7 @@ async def generate_artifact(
             files=["manifest.json"] + all_files,
             token_usage=token_usage,
             model=call_model,
+            spec_text=spec_text,
         )
 
         log.info(
@@ -277,6 +376,6 @@ async def generate_artifact(
     # All retries failed — clean up and raise
     shutil.rmtree(artifact_dir, ignore_errors=True)
     raise RuntimeError(
-        f"generate_artifact: failed to parse LLM response after {_MAX_PARSE_RETRIES} attempts"
+        f"generate_artifact: failed after {_MAX_PARSE_RETRIES} attempts"
         f" for generation {generation}"
     )

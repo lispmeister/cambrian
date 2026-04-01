@@ -114,3 +114,32 @@ async def ensure_on_main() -> None:
         current = await git("rev-parse", "--abbrev-ref", "HEAD")
         if current != "main":
             await git("checkout", "main")
+
+
+async def ensure_repo() -> None:
+    """Initialize the artifacts repo if it does not already exist.
+
+    Creates the directory, runs git init (with main as default branch),
+    and makes an empty initial commit so the repo has a HEAD. Safe to call
+    on an already-initialized repo (.git exists -> returns immediately).
+    """
+    root = Path(artifacts_root())
+    root.mkdir(parents=True, exist_ok=True)
+
+    if (root / ".git").exists():
+        return
+
+    cwd = str(root)
+    for cmd_args in (
+        ("init", "-b", "main"),
+        ("commit", "--allow-empty", "-m", "Initial commit"),
+    ):
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *cmd_args,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    log.info("artifacts_repo_initialized", path=cwd)

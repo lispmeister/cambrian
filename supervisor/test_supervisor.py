@@ -445,6 +445,9 @@ async def test_rollback_git_error(
     client: TestClient,
     mock_git_ops: Any,
 ) -> None:
+    from supervisor import generations
+
+    generations.append({"generation": 1, "outcome": "tested", "artifact-ref": "gen-1"})
     mock_git_ops.rollback = AsyncMock(side_effect=Exception("git error"))
     mock_git_ops.GitError = Exception
     resp = await client.post("/rollback", json={"generation": 1})
