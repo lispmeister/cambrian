@@ -187,6 +187,41 @@ class TestManifestValidation:
         errors = test_rig._validate_manifest(m)
         assert any("status" in e for e in errors)
 
+    def test_script_form_rejected_when_init_py_exists(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "src").mkdir()
+        (workspace / "src" / "__init__.py").write_text("")
+        m = _write_manifest(workspace, {"entry": {"start": "python src/prime.py"}})
+        errors = test_rig._validate_manifest(m)
+        assert any("module form" in e for e in errors)
+
+    def test_module_form_accepted_when_init_py_exists(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "src").mkdir()
+        (workspace / "src" / "__init__.py").write_text("")
+        m = _write_manifest(workspace, {"entry": {"start": "python -m src.prime"}})
+        errors = test_rig._validate_manifest(m)
+        assert not any("module form" in e for e in errors)
+
+    def test_script_form_allowed_when_no_init_py(self, workspace: Path) -> None:
+        import test_rig
+
+        # No src/__init__.py — flat layout, script form is fine
+        m = _write_manifest(workspace, {"entry": {"start": "python src/server.py"}})
+        errors = test_rig._validate_manifest(m)
+        assert not any("module form" in e for e in errors)
+
+    def test_python3_script_form_rejected(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "src").mkdir()
+        (workspace / "src" / "__init__.py").write_text("")
+        m = _write_manifest(workspace, {"entry": {"start": "python3 src/prime.py"}})
+        errors = test_rig._validate_manifest(m)
+        assert any("module form" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # Pytest count parsing tests

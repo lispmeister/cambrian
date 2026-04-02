@@ -41,6 +41,7 @@ ALL_STAGES = ["manifest", "build", "test", "start", "health"]
 _SPEC_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 _URL_RE = re.compile(r"^https?://")
+_SCRIPT_FORM_RE = re.compile(r"^python[3]?\s+\S+\.py\b")
 
 
 def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
@@ -110,6 +111,19 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
             val = entry.get(field)
             if not isinstance(val, str) or not val:
                 errors.append(f"entry.{field}: expected non-empty string, got {val!r}")
+        # Reject script form when src/ is a package — causes sys.path failures at runtime
+        # even when tests pass (pytest adds CWD to sys.path; direct script invocation does not).
+        start_cmd = entry.get("start", "")
+        if (
+            isinstance(start_cmd, str)
+            and _SCRIPT_FORM_RE.match(start_cmd)
+            and (WORKSPACE / "src" / "__init__.py").exists()
+        ):
+            errors.append(
+                "entry.start: MUST use module form (e.g. python -m src.prime), "
+                "not script form (e.g. python src/prime.py), when src/__init__.py exists — "
+                "see spec § entry.start"
+            )
         health = entry.get("health")
         if not isinstance(health, str) or not _URL_RE.match(health):
             errors.append(f"entry.health: expected http(s):// URL, got {health!r}")
