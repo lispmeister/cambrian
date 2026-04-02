@@ -1,0 +1,24 @@
+M2 BO loop starting
+  Spec:       /Users/fix/projects/claude-code/cambrian/spec/CAMBRIAN-SPEC-005.md
+  Supervisor: http://localhost:8400
+2026-04-02 17:52:58 [info     ] bo_loop_start                  budget=1 component=bo_loop full_n=3 mini_n=3 sections=20
+2026-04-02 17:52:58 [info     ] campaign_start                 campaign_id=campaign-638e0170 component=campaign n=3 spec=/var/folders/67/r4rvvtcx6pn290yj91djslg40000gn/T/spec-candidate-h59spltj.md
+2026-04-02 17:52:58 [info     ] prime_runner_llm_call          attempt=1 component=prime_runner generation=17 model=claude-sonnet-4-6
+2026-04-02 17:56:07 [info     ] prime_runner_artifact_written  artifact_dir=../cambrian-artifacts/campaigns/campaign-638e0170/gen-17 component=prime_runner files=17 generation=17 tokens_in=35017 tokens_out=16674
+2026-04-02 17:56:15 [info     ] generation_finalized           component=campaign endpoint=/rollback generation=17 viable=False
+2026-04-02 17:56:15 [info     ] artifact_dir_cleaned           component=campaign generation=17 path=../cambrian-artifacts/campaigns/campaign-638e0170/gen-17
+2026-04-02 17:56:15 [info     ] campaign_generation_done       campaign_id=campaign-638e0170 component=campaign generation=17 viable=False
+2026-04-02 17:56:15 [info     ] prime_runner_llm_call          attempt=1 component=prime_runner generation=18 model=claude-sonnet-4-6
+2026-04-02 17:59:34 [info     ] prime_runner_artifact_written  artifact_dir=../cambrian-artifacts/campaigns/campaign-638e0170/gen-18 component=prime_runner files=17 generation=18 tokens_in=36040 tokens_out=17542
+2026-04-02 17:59:42 [info     ] generation_finalized           component=campaign endpoint=/rollback generation=18 viable=False
+2026-04-02 17:59:42 [info     ] artifact_dir_cleaned           component=campaign generation=18 path=../cambrian-artifacts/campaigns/campaign-638e0170/gen-18
+2026-04-02 17:59:42 [info     ] campaign_generation_done       campaign_id=campaign-638e0170 component=campaign generation=18 viable=False
+2026-04-02 17:59:42 [info     ] prime_runner_llm_call          attempt=1 component=prime_runner generation=19 model=claude-sonnet-4-6
+2026-04-02 18:03:01 [info     ] prime_runner_artifact_written  artifact_dir=../cambrian-artifacts/campaigns/campaign-638e0170/gen-19 component=prime_runner files=17 generation=19 tokens_in=36987 tokens_out=17811
+2026-04-02 18:03:09 [info     ] generation_finalized           component=campaign endpoint=/rollback generation=19 viable=False
+2026-04-02 18:03:09 [info     ] artifact_dir_cleaned           component=campaign generation=19 path=../cambrian-artifacts/campaigns/campaign-638e0170/gen-19
+2026-04-02 18:03:09 [info     ] campaign_generation_done       campaign_id=campaign-638e0170 component=campaign generation=19 viable=False
+2026-04-02 18:03:09 [info     ] campaign_complete              campaign_id=campaign-638e0170 component=campaign fitness_trend=0.0 viability_rate=0.0
+2026-04-02 18:03:09 [info     ] bo_loop_screened_out           component=bo_loop mini_viability=0.0 spec_hash=sha256:cf5f9
+2026-04-02 18:03:09 [info     ] bo_loop_iteration              budget=1 component=bo_loop iteration=1
+2026-04-02 18:03:09 [info     ] type1_mutate_attempt           attempt=1 component=spec_mutator model=claude-sonnet-4-6 target_section='What This Document Is'

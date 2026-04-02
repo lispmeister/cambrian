@@ -1,0 +1,27 @@
+[2m2026-04-02T13:52:45.115573Z[0m [[32m[1minfo     [0m] [1msupervisor_ready              [0m [36martifacts_root[0m=[35m../cambrian-artifacts[0m [36mcomponent[0m=[35msupervisor[0m [36mport[0m=[35m8400[0m
+======== Running on http://0.0.0.0:8400 ========
+(Press CTRL+C to quit)
+[2m2026-04-02T13:56:07.163611Z[0m [[32m[1minfo     [0m] [1mgeneration_record_appended    [0m [36mgeneration[0m=[35m17[0m
+[2m2026-04-02T13:56:07.163728Z[0m [[32m[1minfo     [0m] [1mspawn_accepted                [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-17[0m [36mgeneration[0m=[35m17[0m
+[2m2026-04-02T13:56:07.326000Z[0m [[32m[1minfo     [0m] [1mtest_rig_started              [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-17[0m [36mgeneration[0m=[35m17[0m
+[2m2026-04-02T13:56:14.447705Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'viability'][0m [36mgeneration[0m=[35m17[0m
+[2m2026-04-02T13:56:14.447843Z[0m [[32m[1minfo     [0m] [1mtest_rig_complete             [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m17[0m [36mviable[0m=[35mFalse[0m
+[2m2026-04-02T13:56:15.249050Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mgeneration[0m=[35m17[0m [36mtag[0m=[35mgen-17-failed[0m
+[2m2026-04-02T13:56:15.250472Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'artifact-ref'][0m [36mgeneration[0m=[35m17[0m
+[2m2026-04-02T13:56:15.250538Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m17[0m [36mtag[0m=[35mgen-17-failed[0m
+[2m2026-04-02T13:59:34.222530Z[0m [[32m[1minfo     [0m] [1mgeneration_record_appended    [0m [36mgeneration[0m=[35m18[0m
+[2m2026-04-02T13:59:34.222629Z[0m [[32m[1minfo     [0m] [1mspawn_accepted                [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-18[0m [36mgeneration[0m=[35m18[0m
+[2m2026-04-02T13:59:34.335880Z[0m [[32m[1minfo     [0m] [1mtest_rig_started              [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-18[0m [36mgeneration[0m=[35m18[0m
+[2m2026-04-02T13:59:41.043550Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'viability'][0m [36mgeneration[0m=[35m18[0m
+[2m2026-04-02T13:59:41.043691Z[0m [[32m[1minfo     [0m] [1mtest_rig_complete             [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m18[0m [36mviable[0m=[35mFalse[0m
+[2m2026-04-02T13:59:42.289664Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mgeneration[0m=[35m18[0m [36mtag[0m=[35mgen-18-failed[0m
+[2m2026-04-02T13:59:42.290558Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'artifact-ref'][0m [36mgeneration[0m=[35m18[0m
+[2m2026-04-02T13:59:42.290594Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m18[0m [36mtag[0m=[35mgen-18-failed[0m
+[2m2026-04-02T14:03:01.452122Z[0m [[32m[1minfo     [0m] [1mgeneration_record_appended    [0m [36mgeneration[0m=[35m19[0m
+[2m2026-04-02T14:03:01.452237Z[0m [[32m[1minfo     [0m] [1mspawn_accepted                [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-19[0m [36mgeneration[0m=[35m19[0m
+[2m2026-04-02T14:03:01.584511Z[0m [[32m[1minfo     [0m] [1mtest_rig_started              [0m [36mcomponent[0m=[35msupervisor[0m [36mcontainer_id[0m=[35mlab-gen-19[0m [36mgeneration[0m=[35m19[0m
+[2m2026-04-02T14:03:07.769828Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'viability'][0m [36mgeneration[0m=[35m19[0m
+[2m2026-04-02T14:03:07.769896Z[0m [[32m[1minfo     [0m] [1mtest_rig_complete             [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m19[0m [36mviable[0m=[35mFalse[0m
+[2m2026-04-02T14:03:09.506263Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mgeneration[0m=[35m19[0m [36mtag[0m=[35mgen-19-failed[0m
+[2m2026-04-02T14:03:09.507205Z[0m [[32m[1minfo     [0m] [1mgeneration_record_updated     [0m [36mfields[0m=[35m['outcome', 'artifact-ref'][0m [36mgeneration[0m=[35m19[0m
+[2m2026-04-02T14:03:09.507242Z[0m [[32m[1minfo     [0m] [1mgeneration_rolled_back        [0m [36mcomponent[0m=[35msupervisor[0m [36mgeneration[0m=[35m19[0m [36mtag[0m=[35mgen-19-failed[0m
