@@ -1238,3 +1238,46 @@ class TestComputeFitnessSpecVectorPassRate:
         }
         fitness = test_rig.compute_fitness(checks, {}, ["health"])
         assert fitness["spec_vector_pass_rate"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# run_import_check tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunImportCheck:
+    def test_no_minus_m_flag_skips_check(self, workspace: Path) -> None:
+        import test_rig
+
+        result = test_rig.run_import_check({"start": "python src/prime.py"})
+        assert result["passed"] is True
+
+    def test_no_start_command_skips_check(self, workspace: Path) -> None:
+        import test_rig
+
+        result = test_rig.run_import_check({})
+        assert result["passed"] is True
+
+    def test_importable_module_passes(self, workspace: Path) -> None:
+        import test_rig
+
+        # 'os' is always importable
+        result = test_rig.run_import_check({"start": "python -m os"})
+        assert result["passed"] is True
+        assert "duration_ms" in result
+
+    def test_missing_module_fails(self, workspace: Path) -> None:
+        import test_rig
+
+        result = test_rig.run_import_check(
+            {"start": "python -m _cambrian_nonexistent_module_xyz"}
+        )
+        assert result["passed"] is False
+        assert result.get("exit_code") is not None
+
+    def test_python3_flag_extracted(self, workspace: Path) -> None:
+        import test_rig
+
+        # Should extract 'os' correctly from 'python3 -m os'
+        result = test_rig.run_import_check({"start": "python3 -m os"})
+        assert result["passed"] is True

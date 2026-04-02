@@ -341,6 +341,62 @@ def _parse_pytest_failures(output: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def run_import_check(entry: dict[str, Any]) -> dict[str, Any]:
+    """Verify the start module is importable before attempting to start the process.
+
+    Extracts the module name from 'python -m <module>' in entry.start and runs
+    it through the interpreter's import machinery. Catches ModuleNotFoundError
+    and sys.path issues before the start stage, where they produce opaque crashes.
+    Returns immediately (passed=True) if the start command does not use -m.
+    """
+    import shlex
+    import sys
+
+    cmd = entry.get("start", "")
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return {"passed": True, "duration_ms": 0}
+
+    module: str | None = None
+    for i, part in enumerate(parts):
+        if part == "-m" and i + 1 < len(parts):
+            module = parts[i + 1]
+            break
+
+    if module is None:
+        return {"passed": True, "duration_ms": 0}
+
+    t0 = time.monotonic()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", f"import {module}"],
+            cwd=WORKSPACE,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            start_new_session=True,
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "passed": False,
+            "duration_ms": duration_ms,
+            "error": f"import {module!r} timed out after 30s",
+        }
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if result.returncode != 0:
+        return {
+            "passed": False,
+            "duration_ms": duration_ms,
+            "exit_code": result.returncode,
+            "stdout_tail": _tail_lines(result.stdout, 20),
+            "stderr_tail": _tail_lines(result.stderr, 20),
+        }
+    return {"passed": True, "duration_ms": duration_ms}
+
+
 def _parse_port_from_url(url: str) -> tuple[str, int]:
     """Extract (host, port) from a URL. Returns ('localhost', 8401) on failure."""
     try:
@@ -1051,6 +1107,31 @@ def run_pipeline() -> None:
     # Stage 4: Start
     # -----------------------------------------------------------------------
     print("[test-rig] Stage: start", flush=True)
+
+    # Pre-start import check: verify the module is importable before attempting
+    # to launch the process. Catches sys.path/ModuleNotFoundError issues that
+    # produce opaque start failures (process exits with code 1, stderr buried).
+    import_result = run_import_check(entry)
+    if not import_result["passed"]:
+        checks["start"] = {"passed": False, "duration_ms": import_result["duration_ms"]}
+        stages_completed.append("start")
+        error_detail = import_result.get("error") or import_result.get("stderr_tail", "")
+        _write_report(
+            generation=generation,
+            failure_stage="start",
+            checks=checks,
+            fitness=compute_fitness(checks, manifest, stages_completed),
+            diagnostics={
+                "stage": "start",
+                "summary": f"import check failed: {error_detail}",
+                "exit_code": import_result.get("exit_code"),
+                "failures": [],
+                "stdout_tail": import_result.get("stdout_tail", ""),
+                "stderr_tail": import_result.get("stderr_tail", ""),
+            },
+        )
+        sys.exit(1)
+
     health_url = entry.get("health", "http://localhost:8401/health")
     host, port = _parse_port_from_url(health_url)
 

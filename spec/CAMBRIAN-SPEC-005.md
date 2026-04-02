@@ -337,6 +337,30 @@ if current_path is not None:
 
 A response that opens a `<file>` block without a matching `</file:end>` is malformed — raise `ParseError`. Anything outside `<file>` blocks (LLM commentary) is silently discarded. The `:end` suffix makes the closing delimiter unique — it cannot appear in natural file content.
 
+**Critical: the close-tag match is exact, not a substring search.** The condition `line.rstrip("\n\r") == "</file:end>"` matches ONLY when the entire line (stripped of newlines) is `</file:end>`. A line like `x = "</file:end>"` or `# ends with </file:end>` does NOT match — the content is accumulated as-is. A common implementation mistake is `"</file:end>" in line` (substring check), which incorrectly closes blocks when `</file:end>` appears anywhere on the line.
+
+**Test vectors for `parse_files()`** — two generations failed on `test_parse_multiple_close_tags_in_content` due to the substring check mistake. These vectors pin the correct behavior:
+
+```python
+# Vector 1: </file:end> embedded in a longer line — NOT a close tag
+response = '<file path="a.py">\nx = "</file:end>"\n</file:end>\n'
+assert parse_files(response) == {"a.py": 'x = "</file:end>"\n'}
+
+# Vector 2: Multiple files in sequence
+response = (
+    '<file path="a.py">\nfoo\n</file:end>\n'
+    '<file path="b.py">\nbar\n</file:end>\n'
+)
+assert parse_files(response) == {"a.py": "foo\n", "b.py": "bar\n"}
+
+# Vector 3: </file:end> alone on its own line ALWAYS closes the block —
+# content after it (before the next <file> header) is silently discarded.
+response = '<file path="a.py">\nline1\n</file:end>\ndiscarded\n'
+assert parse_files(response) == {"a.py": "line1\n"}
+# (The unclosed trailing content after </file:end> is discarded because no
+#  <file> header opens a new block — it is not a ParseError.)
+```
+
 ### Fresh generation prompt
 
 **System message:**
