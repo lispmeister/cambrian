@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.14.2
+version: 0.14.3
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -478,6 +478,11 @@ Maximum parse retries: `CAMBRIAN_MAX_PARSE_RETRIES` (default 2). A successful pa
 - LLM API client: `anthropic` Python SDK in async mode (`anthropic.AsyncAnthropic()`). The SDK handles authentication, retries, rate limiting, and streaming — do not reimplement these with raw `aiohttp`.
 - **`call_llm()` MUST use streaming.** Use `async with client.messages.stream(...) as stream: message = await stream.get_final_message()`. Do NOT use `client.messages.create()` — the SDK raises an error for large `max_tokens` values with non-streaming calls. This applies regardless of `max_tokens` value.
 - Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
+
+  **structlog API — the first positional argument IS the event string.** Unlike stdlib `logging`, structlog does not take a format string. The first positional arg is stored as the `event` key.
+  - Correct: `log.info("prime_starting", component="prime", generation=1)`
+  - WRONG: `log.info("event", event="prime_starting")` — passes `event` twice → `TypeError: got multiple values for argument 'event'`
+  - WRONG: `log.info("Starting generation %d", gen)` — structlog does not interpolate; produces a literal `%d` in the event string
 - Type annotations: full coverage, Pyright strict compatible
 - Validation: Pydantic v2 for all I/O boundary data (manifest, viability report, API responses)
 
@@ -541,6 +546,7 @@ The test suite MUST cover:
 - Generation number is computed correctly from history
 - Retry counter increments and respects `CAMBRIAN_MAX_RETRIES`
 - Model escalates to `CAMBRIAN_ESCALATION_MODEL` on `retry_count >= 1`
+- **Every test function MUST import the symbols it uses** at the top of the function body (e.g. `from src.prime import make_app`). Python function scopes are isolated — a local import in `test_health()` is NOT visible to `test_stats()`. Do NOT rely on module-level imports; each test function must be self-contained. This applies to ALL test functions, not just the first few.
 
 Tests MUST be runnable with `python -m pytest tests/ -v`.
 
@@ -889,7 +895,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.14.2"
+version: "0.14.3"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
