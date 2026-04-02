@@ -33,7 +33,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-01   | [journal-2026-04-01-summary.md](journal-2026-04-01-summary.md) | **Summary**: project arc, architectural insights, recurring bug patterns, key decisions, anti-cheating layers, test evolution, budget, process lessons | All sessions Mar 21 - Apr 01 |
 | 2026-04-01b  | [journal-2026-04-01b.md](journal-2026-04-01b.md) | Fix 11 P2/P3 spec compliance bugs; fix 3 M2 launch blockers (token limit, stale Docker image, /venv permissions); first viable M2 generation (gen 15) | cambrian-dzf M2 Stage 1 |
 | 2026-04-01c  | [journal-2026-04-01c.md](journal-2026-04-01c.md) | Gen-16 diagnosis + spec path fix (v0.14.2); **full viability analysis** of all 16 gens — failure classification, Python brittleness assessment, recommendations for next run | cambrian-u3ig |
-| 2026-04-02   | [journal-2026-04-02.md](journal-2026-04-02.md) | Smoke-import check + parser vectors (pre-run hardening); campaign gens 17–19: 0/3 viable; all 3 reverted to `python src/prime.py` despite spec fix; parser fix confirmed working | cambrian-tbnt, cambrian-jaxs |
+| 2026-04-02   | [journal-2026-04-02.md](journal-2026-04-02.md) | Smoke-import check + parser vectors; campaign gens 17–19 (0/3 viable); manifest validation gate for entry.start; structlog + test-import spec guidance; spec v0.14.3 | cambrian-tbnt, cambrian-jaxs, cambrian-0p3w, cambrian-x44c, cambrian-an2x |
 
 ---
 
