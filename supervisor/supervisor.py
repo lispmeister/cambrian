@@ -10,7 +10,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 import aiodocker
 import structlog
@@ -70,6 +70,15 @@ def _set_status(status: str, generation: int | None = None) -> None:
     _status = status
     if generation is not None:
         _current_generation = generation
+
+
+def _schedule_test_rig(
+    factory: Callable[[], Coroutine[Any, Any, None]],
+    *,
+    name: str | None = None,
+) -> None:
+    """Schedule test rig without instantiating coroutine in tests."""
+    asyncio.create_task(factory(), name=name)
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +154,7 @@ async def handle_spawn(request: web.Request) -> web.Response:
 
     # BOOTSTRAP-SPEC-002 §1.3: generation MUST be >= 1
     if generation < 1:
-        return web.json_response(
-            {"ok": False, "error": "generation must be >= 1"}, status=400
-        )
+        return web.json_response({"ok": False, "error": "generation must be >= 1"}, status=400)
 
     # Guard against duplicate spawns — two requests for the same generation would
     # race on git branch creation and append two records.
@@ -157,10 +164,13 @@ async def handle_spawn(request: web.Request) -> web.Response:
         )
 
     artifacts_root = git_ops.artifacts_root()
-    artifact_path = (Path(artifacts_root) / artifact_rel).resolve()
+    artifacts_root_path = Path(artifacts_root).resolve()
+    artifact_path = (artifacts_root_path / artifact_rel).resolve()
 
     # Path traversal guard — reject paths that escape the artifacts root
-    if not str(artifact_path).startswith(str(Path(artifacts_root).resolve())):
+    try:
+        artifact_path.relative_to(artifacts_root_path)
+    except ValueError:
         return web.json_response(
             {"ok": False, "error": "artifact-path escapes artifacts root"},
             status=400,
@@ -169,6 +179,36 @@ async def handle_spawn(request: web.Request) -> web.Response:
     if not artifact_path.exists():
         return web.json_response(
             {"ok": False, "error": f"Artifact path does not exist: {artifact_path}"},
+            status=400,
+        )
+
+    manifest_file = artifact_path / "manifest.json"
+    if not manifest_file.exists():
+        return web.json_response(
+            {"ok": False, "error": "manifest.json missing in artifact"},
+            status=400,
+        )
+
+    try:
+        manifest = json.loads(manifest_file.read_text())
+    except json.JSONDecodeError as e:
+        return web.json_response(
+            {"ok": False, "error": f"manifest.json is invalid JSON: {e}"},
+            status=400,
+        )
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+        return web.json_response(
+            {"ok": False, "error": "manifest.json files must be an array of strings"},
+            status=400,
+        )
+
+    try:
+        artifact_hash = compute_artifact_hash(artifact_path, files)
+    except Exception as e:
+        return web.json_response(
+            {"ok": False, "error": f"artifact-hash computation failed: {e}"},
             status=400,
         )
 
@@ -209,15 +249,6 @@ async def handle_spawn(request: web.Request) -> web.Response:
     campaign_id: str | None = body.get("campaign-id")
 
     # Compute artifact-hash from manifest files list (CAMBRIAN-SPEC-005 algorithm)
-    artifact_hash = ""
-    manifest_file = artifact_path / "manifest.json"
-    if manifest_file.exists():
-        try:
-            manifest = json.loads(manifest_file.read_text())
-            files: list[str] = manifest.get("files", [])
-            artifact_hash = compute_artifact_hash(artifact_path, files)
-        except Exception as e:
-            log.warning("artifact_hash_failed", generation=generation, error=str(e))
 
     # Record in-progress state — MAY fields (artifact-ref, completed, viability)
     # are absent while in_progress, per spec.
@@ -235,8 +266,8 @@ async def handle_spawn(request: web.Request) -> web.Response:
     generations.append(record)
 
     # Spawn Test Rig as background task — return immediately
-    asyncio.create_task(
-        run_test_rig(generation, artifact_path, container_id),
+    _schedule_test_rig(
+        lambda: run_test_rig(generation, artifact_path, container_id),
         name=f"test-rig-gen-{generation}",
     )
 

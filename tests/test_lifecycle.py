@@ -35,6 +35,27 @@ def set_artifacts_root(artifacts_root: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
 
+def _write_min_manifest(artifact_dir: Path) -> None:
+    manifest = {
+        "cambrian-version": 1,
+        "generation": 1,
+        "parent-generation": 0,
+        "spec-hash": "sha256:" + "a" * 64,
+        "artifact-hash": "sha256:" + "b" * 64,
+        "producer-model": "claude-sonnet-4-6",
+        "token-usage": {"input": 1, "output": 1},
+        "files": ["manifest.json"],
+        "created-at": "2026-03-21T14:30:00Z",
+        "entry": {
+            "build": "pip install -r requirements.txt",
+            "test": "pytest tests/",
+            "start": "python -m src.prime",
+            "health": "http://localhost:8401/health",
+        },
+    }
+    (artifact_dir / "manifest.json").write_text(json.dumps(manifest))
+
+
 @pytest.fixture
 def mock_git_ops(tmp_path: Path) -> Any:
     with patch("supervisor.supervisor.git_ops") as mock:
@@ -104,10 +125,11 @@ class TestAPIResponseSchemas:
         """POST /spawn success must return {ok, container-id, generation}."""
         art_dir = artifacts_root / "gen-1"
         art_dir.mkdir()
+        _write_min_manifest(art_dir)
 
         with (
             patch("supervisor.supervisor.aiodocker.Docker") as mock_cls,
-            patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+            patch("supervisor.supervisor._schedule_test_rig", return_value=None),
         ):
             mock = AsyncMock()
             mock.images.list = AsyncMock(return_value=[{"RepoTags": ["cambrian-base:latest"]}])
@@ -255,6 +277,27 @@ class TestViabilityReportContract:
         report = _make_error_viability(1, "test")
         # Should be parseable as ISO datetime
         datetime.fromisoformat(report["completed_at"])
+
+
+class TestCampaignErrorRecord:
+    def test_campaign_error_record_schema(self) -> None:
+        from supervisor.campaign import _error_record
+
+        record = _error_record(7, "artifact generation failed")
+        assert record["generation"] == 7
+        assert record["outcome"] == "failed"
+        viability = record["viability"]
+        required = {
+            "generation",
+            "status",
+            "failure_stage",
+            "checks",
+            "completed_at",
+            "diagnostics",
+        }
+        assert required <= set(viability.keys())
+        assert viability["generation"] == 7
+        assert viability["status"] == "non-viable"
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +474,7 @@ class TestDockerMockCorrectness:
         """Verify the code calls images.list() to check for images."""
         art_dir = artifacts_root / "gen-1"
         art_dir.mkdir()
+        _write_min_manifest(art_dir)
 
         with patch("supervisor.supervisor.aiodocker.Docker") as mock_cls:
             mock_docker = AsyncMock()
@@ -573,10 +617,11 @@ class TestWireFormatFieldNaming:
         """The record created by /spawn must use kebab-case field names."""
         art_dir = artifacts_root / "gen-1"
         art_dir.mkdir()
+        _write_min_manifest(art_dir)
 
         with (
             patch("supervisor.supervisor.aiodocker.Docker") as mock_cls,
-            patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+            patch("supervisor.supervisor._schedule_test_rig", return_value=None),
         ):
             mock = AsyncMock()
             mock.images.list = AsyncMock(return_value=[{"RepoTags": ["cambrian-base:latest"]}])

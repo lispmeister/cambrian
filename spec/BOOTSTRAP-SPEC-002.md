@@ -274,6 +274,7 @@ async def run_test_rig(generation, artifact_path, container_id):
     """Background task: run Test Rig, update generation record when done."""
     client = aiodocker.Docker()
     container_timeout = int(os.environ.get("CAMBRIAN_CONTAINER_TIMEOUT", "600"))
+    output_dir = tempfile.mkdtemp(prefix="cambrian-output-")
     config = {
         "Image": "cambrian-base",
         "Env": [
@@ -281,7 +282,10 @@ async def run_test_rig(generation, artifact_path, container_id):
             f"CAMBRIAN_SUPERVISOR_URL=http://host.docker.internal:8400",
         ],
         "HostConfig": {
-            "Binds": [f"{artifact_path}:/workspace:rw"],
+            "Binds": [
+                f"{artifact_path}:/workspace:rw",
+                f"{output_dir}:/output:rw",
+            ],
         },
     }
     container = await client.containers.create_or_replace(name=container_id, config=config)
@@ -298,8 +302,8 @@ async def run_test_rig(generation, artifact_path, container_id):
             update_generation_record(generation, outcome="timeout")
             timed_out = True
             return
-        # Read viability report from mounted volume (written by Test Rig to /workspace/viability-report.json)
-        report = read_viability_report(artifact_path)
+        # Read viability report from mounted volume (written by Test Rig to /output/viability-report.json)
+        report = read_viability_report(output_dir)
         # Set outcome to "tested" — Prime polls for this state, then calls /promote or /rollback.
         # The Supervisor MUST NOT auto-promote or auto-rollback. Prime owns that decision.
         update_generation_record(generation, report, outcome="tested")
@@ -471,7 +475,7 @@ Stage 5 — Health Check:
   - After checks: terminate the started process (SIGTERM, then SIGKILL after 5s)
 
 Report:
-  - Write /workspace/viability-report.json per CAMBRIAN-SPEC-005 § Viability Report schema
+  - Write /output/viability-report.json per CAMBRIAN-SPEC-005 § Viability Report schema
   - Compute fitness vector from checks data + manifest (see §2.8)
   - If any stage failed, include a diagnostics object (see §2.6)
   - Exit 0 if all stages passed (status=viable)
@@ -1072,7 +1076,7 @@ Unlike the examiner (which sees only the spec), the red-team sees the actual cod
 
 #### Isolated output mount
 
-The viability report MUST be written to a separate bind-mounted directory (`/output`) rather than the artifact workspace (`/workspace`). The Supervisor creates a randomly-named temp directory on the host (e.g. `tmpXXXXXX`) and bind-mounts it at `//output`. Because the mount source path is randomized at runtime, organism code running in `/workspace` cannot predict or target it.
+The viability report MUST be written to a separate bind-mounted directory (`/output`) rather than the artifact workspace (`/workspace`). The Supervisor creates a randomly-named temp directory on the host (e.g. `tmpXXXXXX`) and bind-mounts it at `/output`. Because the mount source path is randomized at runtime, organism code running in `/workspace` cannot predict or target it.
 
 The Test Rig reads `CAMBRIAN_OUTPUT_DIR` (default: `/output`) and writes `viability-report.json` there. The Supervisor reads the report from the same temp dir after the container exits, then removes the temp dir.
 
@@ -1371,7 +1375,7 @@ After Phase 0 is built, run this sequence:
                                 -H "Content-Type: application/json" \
                                 -d '{"spec-hash":"sha256:000...","generation":0,"artifact-path":"gen-0"}'
 4. Wait for container to exit
-5. Check viability report:    cat $CAMBRIAN_ARTIFACTS_ROOT/gen-0/viability-report.json
+5. Check viability report:    curl http://localhost:8400/versions | jq '.[0].viability'
    → Expect: status=viable, all checks passed
 6. Promote:                   curl -X POST http://localhost:8400/promote \
                                 -H "Content-Type: application/json" \

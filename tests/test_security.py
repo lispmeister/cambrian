@@ -8,6 +8,7 @@ injection and boundary-condition bugs.
 Run with: uv run pytest tests/test_security.py -v
 """
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,27 @@ def mock_git_ops(tmp_path: Path) -> Any:
         mock.rollback = AsyncMock(return_value="gen-1-failed")
         mock.GitError = Exception
         yield mock
+
+
+def _write_min_manifest(artifact_dir: Path) -> None:
+    manifest = {
+        "cambrian-version": 1,
+        "generation": 1,
+        "parent-generation": 0,
+        "spec-hash": "sha256:" + "a" * 64,
+        "artifact-hash": "sha256:" + "b" * 64,
+        "producer-model": "claude-sonnet-4-6",
+        "token-usage": {"input": 1, "output": 1},
+        "files": ["manifest.json"],
+        "created-at": "2026-03-21T14:30:00Z",
+        "entry": {
+            "build": "pip install -r requirements.txt",
+            "test": "pytest tests/",
+            "start": "python -m src.prime",
+            "health": "http://localhost:8401/health",
+        },
+    }
+    (artifact_dir / "manifest.json").write_text(json.dumps(manifest))
 
 
 @pytest.fixture
@@ -79,6 +101,7 @@ class TestPathTraversal:
         "..%2F..%2Fetc%2Fpasswd",  # URL-encoded (aiohttp decodes before handler)
         "gen-1/../../../../tmp",
         "gen-1/../../../..",
+        "../artifacts_evil/gen-1",
     ]
 
     @pytest.mark.asyncio
@@ -143,10 +166,11 @@ class TestPathTraversal:
         """A valid relative path inside artifacts root should pass traversal check."""
         art_dir = artifacts_root / "gen-1"
         art_dir.mkdir()
+        _write_min_manifest(art_dir)
 
         with (
             patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls,
-            patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+            patch("supervisor.supervisor._schedule_test_rig", return_value=None),
         ):
             mock_docker = AsyncMock()
             mock_docker.images.list = AsyncMock(
@@ -174,10 +198,11 @@ class TestPathTraversal:
         """Nested subdirectory inside artifacts root is allowed."""
         nested = artifacts_root / "campaign" / "gen-1"
         nested.mkdir(parents=True)
+        _write_min_manifest(nested)
 
         with (
             patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls,
-            patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+            patch("supervisor.supervisor._schedule_test_rig", return_value=None),
         ):
             mock_docker = AsyncMock()
             mock_docker.images.list = AsyncMock(

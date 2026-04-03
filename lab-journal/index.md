@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-03
-**Total entries:** 24 (plus this index)
+**Total entries:** 27 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -35,6 +35,10 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-01c  | [journal-2026-04-01c.md](journal-2026-04-01c.md) | Gen-16 diagnosis + spec path fix (v0.14.2); **full viability analysis** of all 16 gens — failure classification, Python brittleness assessment, recommendations for next run | cambrian-u3ig |
 | 2026-04-02   | [journal-2026-04-02.md](journal-2026-04-02.md) | Smoke-import check + parser vectors; campaign gens 17–19 (0/3 viable); manifest validation gate for entry.start; structlog + test-import spec guidance; spec v0.14.3 | cambrian-tbnt, cambrian-jaxs, cambrian-0p3w, cambrian-x44c, cambrian-an2x |
 | 2026-04-03   | [journal-2026-04-03.md](journal-2026-04-03.md) | Campaign gens 20–29 (0/10 viable); prime_runner.py hardcoded wrong start cmd; system prompt enriched; Test Rig diagnostics feedback to next gen | cambrian-7g1a, cambrian-hyuy, cambrian-jpoq, cambrian-xmtq |
+| 2026-04-03b  | [journal-2026-04-03b.md](journal-2026-04-03b.md) | System analysis: spec/code gaps, security findings, new beads | cambrian-mthk, cambrian-x27f, cambrian-g6ne, cambrian-1iiz |
+| 2026-04-03c  | [journal-2026-04-03c.md](journal-2026-04-03c.md) | P0–P2 fix sweep: path traversal, manifest validation, contract substitution, spec alignment | cambrian-mthk, cambrian-x27f, cambrian-g6ne, cambrian-1iiz |
+| 2026-04-03d  | [journal-2026-04-03d.md](journal-2026-04-03d.md) | Cleared un-awaited coroutine warnings in tests | cambrian-8why |
+| 2026-04-03e  | [journal-2026-04-03e.md](journal-2026-04-03e.md) | Test Rig structlog adoption | cambrian-ad3n |
 
 ---
 

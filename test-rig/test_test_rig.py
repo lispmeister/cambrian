@@ -46,12 +46,18 @@ def _write_manifest(workspace: Path, overrides: dict[str, Any] | None = None) ->
         "artifact-hash": "sha256:" + "b" * 64,
         "producer-model": "claude-sonnet-4-6",
         "token-usage": {"input": 1000, "output": 500},
-        "files": ["manifest.json", "src/server.py", "tests/test_server.py"],
+        "files": [
+            "manifest.json",
+            "spec/CAMBRIAN-SPEC-005.md",
+            "src/__init__.py",
+            "src/server.py",
+            "tests/test_server.py",
+        ],
         "created-at": "2026-03-21T14:30:00Z",
         "entry": {
             "build": "pip install -r requirements.txt",
             "test": "pytest tests/",
-            "start": "python src/server.py",
+            "start": "python -m src.server",
             "health": "http://localhost:8401/health",
         },
     }
@@ -107,6 +113,26 @@ class TestManifestValidation:
         m = _write_manifest(workspace, {"files": ["src/server.py"]})
         errors = test_rig._validate_manifest(m)
         assert any("manifest.json" in e for e in errors)
+
+    def test_files_missing_spec_file(self, workspace: Path) -> None:
+        import test_rig
+
+        m = _write_manifest(
+            workspace,
+            {"files": ["manifest.json", "src/__init__.py", "src/server.py"]},
+        )
+        errors = test_rig._validate_manifest(m)
+        assert any("CAMBRIAN-SPEC-005.md" in e for e in errors)
+
+    def test_files_missing_src_init(self, workspace: Path) -> None:
+        import test_rig
+
+        m = _write_manifest(
+            workspace,
+            {"files": ["manifest.json", "spec/CAMBRIAN-SPEC-005.md", "src/server.py"]},
+        )
+        errors = test_rig._validate_manifest(m)
+        assert any("src/__init__.py" in e for e in errors)
 
     def test_empty_files_array(self, workspace: Path) -> None:
         import test_rig
@@ -193,6 +219,18 @@ class TestManifestValidation:
         (workspace / "src").mkdir()
         (workspace / "src" / "__init__.py").write_text("")
         m = _write_manifest(workspace, {"entry": {"start": "python src/prime.py"}})
+        errors = test_rig._validate_manifest(m)
+        assert any("module form" in e for e in errors)
+
+    def test_wrapper_script_form_rejected_when_init_py_exists(self, workspace: Path) -> None:
+        import test_rig
+
+        (workspace / "src").mkdir()
+        (workspace / "src" / "__init__.py").write_text("")
+        m = _write_manifest(
+            workspace,
+            {"entry": {"start": "uv run python src/prime.py"}},
+        )
         errors = test_rig._validate_manifest(m)
         assert any("module form" in e for e in errors)
 
@@ -359,6 +397,7 @@ class TestComputeFitness:
         assert fitness["test_duration_ms"] == 2000
         # start not in stages_completed → key absent
         assert "start_duration_ms" not in fitness
+        assert fitness["total_duration_ms"] == 7000
 
     def test_test_pass_rate(self, workspace: Path) -> None:
         import test_rig
@@ -613,6 +652,22 @@ class TestContractEvaluation:
             result = test_rig._eval_contract("http://localhost:8401", contract, 2)
         assert result["passed"] is False
 
+    def test_body_exact_with_generation_substitution(self, workspace: Path) -> None:
+        import test_rig
+
+        contract = {
+            "name": "stats",
+            "type": "http",
+            "method": "GET",
+            "path": "/stats",
+            "expect": {"status": 200, "body": {"generation": "$GENERATION"}},
+        }
+        body = json.dumps({"generation": 2}).encode()
+        mock_resp = self._make_server_response(200, body)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = test_rig._eval_contract("http://localhost:8401", contract, 2)
+        assert result["passed"] is True
+
     def test_all_contracts_evaluated_no_short_circuit(self, workspace: Path) -> None:
         import test_rig
 
@@ -666,6 +721,8 @@ class TestSkippedStages:
         for stage in ["build", "test", "start", "health"]:
             assert checks[stage]["passed"] is False
             assert checks[stage]["duration_ms"] == 0
+        assert checks["test"]["tests_run"] == 0
+        assert checks["test"]["tests_passed"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1163,15 @@ class TestFindSpecFile:
         found = test_rig._find_spec_file(manifest)
         assert found == spec_path
 
+    def test_manifest_traversal_entry_is_ignored(self, workspace: Path) -> None:
+        import test_rig
+
+        spec_path = workspace / "CAMBRIAN-SPEC-005.md"
+        spec_path.write_text("spec content")
+        manifest: dict[str, Any] = {"files": ["../CAMBRIAN-SPEC-005.md"]}
+        found = test_rig._find_spec_file(manifest)
+        assert found == spec_path
+
 
 # ---------------------------------------------------------------------------
 # Spec vector evaluation in run_health_check
@@ -1304,9 +1370,7 @@ class TestRunImportCheck:
     def test_missing_module_fails(self, workspace: Path) -> None:
         import test_rig
 
-        result = test_rig.run_import_check(
-            {"start": "python -m _cambrian_nonexistent_module_xyz"}
-        )
+        result = test_rig.run_import_check({"start": "python -m _cambrian_nonexistent_module_xyz"})
         assert result["passed"] is False
         assert result.get("exit_code") is not None
 

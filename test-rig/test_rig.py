@@ -4,7 +4,7 @@ Cambrian Test Rig — mechanical verification pipeline.
 Stages: manifest → build → test → start → health → report
 
 Run inside a container with the artifact mounted at /workspace.
-Writes viability-report.json to /workspace on completion.
+Writes viability-report.json to /output on completion.
 """
 
 import contextlib
@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import structlog
+
 WORKSPACE = Path(os.environ.get("CAMBRIAN_WORKSPACE", "/workspace"))
 # Output directory for the viability report — separate from /workspace so the organism
 # (which runs in /workspace) cannot predict or overwrite it.
@@ -33,6 +35,8 @@ CAMBRIAN_VERSION = 1
 # All 5 stage names in order — used to populate unattempted checks
 ALL_STAGES = ["manifest", "build", "test", "start", "health"]
 
+log = structlog.get_logger(component="test_rig")
+
 
 # ---------------------------------------------------------------------------
 # Stage 1: Manifest validation
@@ -41,7 +45,7 @@ ALL_STAGES = ["manifest", "build", "test", "start", "health"]
 _SPEC_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 _URL_RE = re.compile(r"^https?://")
-_SCRIPT_FORM_RE = re.compile(r"^python[3]?\s+\S+\.py\b")
+_SCRIPT_FORM_RE = re.compile(r"(^|\s)python[3]?\s+\S+\.py\b")
 
 
 def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
@@ -94,8 +98,18 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
     files = manifest.get("files")
     if not isinstance(files, list) or len(files) == 0:
         errors.append("files: expected non-empty array of strings")
-    elif "manifest.json" not in files:
-        errors.append("files: must include 'manifest.json'")
+    else:
+        file_entries = [f for f in files if isinstance(f, str)]
+        if len(file_entries) != len(files):
+            errors.append("files: expected array of strings")
+        elif "manifest.json" not in file_entries:
+            errors.append("files: must include 'manifest.json'")
+        else:
+            normalized = {Path(f).as_posix().lstrip("./") for f in file_entries}
+            if not any(p.endswith("CAMBRIAN-SPEC-005.md") for p in normalized):
+                errors.append("files: must include spec/CAMBRIAN-SPEC-005.md")
+            if "src/__init__.py" not in normalized:
+                errors.append("files: must include src/__init__.py")
 
     # created-at
     ca = manifest.get("created-at")
@@ -116,7 +130,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
         start_cmd = entry.get("start", "")
         if (
             isinstance(start_cmd, str)
-            and _SCRIPT_FORM_RE.match(start_cmd)
+            and _SCRIPT_FORM_RE.search(start_cmd)
             and (WORKSPACE / "src" / "__init__.py").exists()
         ):
             errors.append(
@@ -491,9 +505,14 @@ def wait_for_tcp(host: str, port: int, proc: subprocess.Popen[str]) -> dict[str,
 
 def _find_spec_file(manifest: dict[str, Any]) -> Path | None:
     """Find the spec file in WORKSPACE. Returns None if not found."""
+    workspace_root = WORKSPACE.resolve()
     for f in manifest.get("files", []):
         if str(f).endswith("CAMBRIAN-SPEC-005.md"):
             candidate = (WORKSPACE / f).resolve()
+            try:
+                candidate.relative_to(workspace_root)
+            except ValueError:
+                continue
             if candidate.exists():
                 return candidate
     matches = list(WORKSPACE.glob("**/CAMBRIAN-SPEC-005.md"))
@@ -544,7 +563,7 @@ def run_health_check(
             try:
                 spec_vectors = _extract_spec_vectors(spec_file.read_text(encoding="utf-8"))
             except Exception as e:
-                print(f"[test-rig] Warning: failed to read spec vectors: {e}", flush=True)
+                log.warning("spec_vectors_read_failed", error=str(e))
     if spec_vectors is None:
         spec_vectors = []
 
@@ -658,15 +677,14 @@ def _eval_contract(base_url: str, contract: dict[str, Any], generation: int) -> 
                 "duration_ms": duration_ms,
                 "error": f"response body is not valid JSON: {e}",
             }
-        body = _substitute_generation(body, generation)
-
     # body — exact match
     if "body" in expect:
-        if body != expect["body"]:
+        expected_body = _substitute_generation(expect["body"], generation)
+        if body != expected_body:
             return {
                 "passed": False,
                 "duration_ms": duration_ms,
-                "error": f"body mismatch: expected {expect['body']!r}, got {body!r}",
+                "error": f"body mismatch: expected {expected_body!r}, got {body!r}",
             }
 
     # body_contains — partial match
@@ -800,7 +818,9 @@ def compute_fitness(
         if stage in stages_completed:
             fitness[key] = checks.get(stage, {}).get("duration_ms", 0)
 
-    fitness["total_duration_ms"] = sum(checks.get(s, {}).get("duration_ms", 0) for s in ALL_STAGES)
+    fitness["total_duration_ms"] = sum(
+        checks.get(s, {}).get("duration_ms", 0) for s in stages_completed
+    )
 
     # Test metrics
     if "test" in stages_completed:
@@ -949,9 +969,13 @@ def _tail_lines(text: str, n: int) -> str:
     return "".join(lines[-n:])
 
 
-def _skipped_check() -> dict[str, Any]:
+def _skipped_check(stage: str) -> dict[str, Any]:
     """Standard entry for a stage that was not attempted."""
-    return {"passed": False, "duration_ms": 0}
+    check: dict[str, Any] = {"passed": False, "duration_ms": 0}
+    if stage == "test":
+        check["tests_run"] = 0
+        check["tests_passed"] = 0
+    return check
 
 
 # ---------------------------------------------------------------------------
@@ -964,12 +988,12 @@ def run_pipeline() -> None:
     stages_completed: list[str] = []
 
     # Build the full checks dict with skipped entries upfront
-    checks: dict[str, Any] = {s: _skipped_check() for s in ALL_STAGES}
+    checks: dict[str, Any] = {s: _skipped_check(s) for s in ALL_STAGES}
 
     # -----------------------------------------------------------------------
     # Stage 1: Manifest
     # -----------------------------------------------------------------------
-    print("[test-rig] Stage: manifest", flush=True)
+    log.info("stage_start", stage="manifest")
 
     if not manifest_path.exists():
         _write_report(
@@ -1045,12 +1069,12 @@ def run_pipeline() -> None:
         try:
             preread_spec_vectors = _extract_spec_vectors(spec_file.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[test-rig] Warning: failed to pre-read spec vectors: {e}", flush=True)
+            log.warning("spec_vectors_preread_failed", error=str(e))
 
     # -----------------------------------------------------------------------
     # Stage 2: Build
     # -----------------------------------------------------------------------
-    print("[test-rig] Stage: build", flush=True)
+    log.info("stage_start", stage="build")
     build_result = run_build(entry)
     _skip = {"exit_code", "stdout_tail", "stderr_tail", "timed_out"}
     checks["build"] = {k: v for k, v in build_result.items() if k not in _skip}
@@ -1081,7 +1105,7 @@ def run_pipeline() -> None:
     # -----------------------------------------------------------------------
     # Stage 3: Test
     # -----------------------------------------------------------------------
-    print("[test-rig] Stage: test", flush=True)
+    log.info("stage_start", stage="test")
     test_result = run_tests(entry)
     # Store public fields in checks (no internal keys)
     checks["test"] = {
@@ -1120,7 +1144,7 @@ def run_pipeline() -> None:
     # -----------------------------------------------------------------------
     # Stage 4: Start
     # -----------------------------------------------------------------------
-    print("[test-rig] Stage: start", flush=True)
+    log.info("stage_start", stage="start")
 
     # Pre-start import check: verify the module is importable before attempting
     # to launch the process. Catches sys.path/ModuleNotFoundError issues that
@@ -1180,7 +1204,7 @@ def run_pipeline() -> None:
     # -----------------------------------------------------------------------
     # Stage 5: Health / contracts
     # -----------------------------------------------------------------------
-    print(f"[test-rig] Stage: health ({health_url})", flush=True)
+    log.info("stage_start", stage="health", health_url=health_url)
     health_result = run_health_check(
         health_url, contracts, generation, manifest, preread_spec_vectors
     )
@@ -1222,7 +1246,7 @@ def run_pipeline() -> None:
 
     # All stages passed
     fitness = compute_fitness(checks, manifest, stages_completed)
-    print("[test-rig] All stages passed — viable", flush=True)
+    log.info("pipeline_viable")
     _write_report(
         generation=generation,
         failure_stage="none",
@@ -1263,8 +1287,19 @@ def _write_report(
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DIR / "viability-report.json"
     report_path.write_text(json.dumps(report, indent=2))
-    print(f"[test-rig] Report written to {report_path}", flush=True)
+    log.info("report_written", path=str(report_path))
+
+
+def _configure_logging() -> None:
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ]
+    )
 
 
 if __name__ == "__main__":
+    _configure_logging()
     run_pipeline()

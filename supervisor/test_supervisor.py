@@ -27,6 +27,27 @@ def set_artifacts_root(artifacts_root: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
 
+def _write_min_manifest(artifact_dir: Path) -> None:
+    manifest = {
+        "cambrian-version": 1,
+        "generation": 1,
+        "parent-generation": 0,
+        "spec-hash": "sha256:" + "a" * 64,
+        "artifact-hash": "sha256:" + "b" * 64,
+        "producer-model": "claude-sonnet-4-6",
+        "token-usage": {"input": 1, "output": 1},
+        "files": ["manifest.json"],
+        "created-at": "2026-03-21T14:30:00Z",
+        "entry": {
+            "build": "pip install -r requirements.txt",
+            "test": "pytest tests/",
+            "start": "python -m src.prime",
+            "health": "http://localhost:8401/health",
+        },
+    }
+    (artifact_dir / "manifest.json").write_text(json.dumps(manifest))
+
+
 # ---------------------------------------------------------------------------
 # generations.py tests
 # ---------------------------------------------------------------------------
@@ -362,6 +383,27 @@ async def test_spawn_missing_artifact_path(
 
 
 @pytest.mark.asyncio
+async def test_spawn_missing_manifest_rejected(
+    client: TestClient,
+    artifacts_root: Path,
+) -> None:
+    art_dir = artifacts_root / "gen-missing-manifest"
+    art_dir.mkdir()
+    resp = await client.post(
+        "/spawn",
+        json={
+            "generation": 1,
+            "artifact-path": "gen-missing-manifest",
+            "spec-hash": "sha256:" + "a" * 64,
+        },
+    )
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["ok"] is False
+    assert "manifest.json" in data["error"]
+
+
+@pytest.mark.asyncio
 async def test_spawn_path_traversal_rejected(
     client: TestClient,
     artifacts_root: Path,
@@ -388,6 +430,7 @@ async def test_spawn_missing_docker_image(
     # Create artifact dir inside artifacts_root and use a relative path
     art_dir = artifacts_root / "art1"
     art_dir.mkdir()
+    _write_min_manifest(art_dir)
 
     with patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls:
         mock_docker = AsyncMock()
@@ -463,10 +506,11 @@ async def test_spawn_includes_campaign_id(
 ) -> None:
     art_dir = artifacts_root / "art_campaign"
     art_dir.mkdir()
+    _write_min_manifest(art_dir)
 
     with (
         patch("supervisor.supervisor.aiodocker.Docker") as mock_docker_cls,
-        patch("supervisor.supervisor.asyncio.create_task", return_value=None),
+        patch("supervisor.supervisor._schedule_test_rig", return_value=None),
     ):
         mock_docker = AsyncMock()
         # Return the image so the image-found check passes
@@ -716,10 +760,16 @@ class TestComputeCampaignSummary:
         from supervisor.campaign import compute_campaign_summary
 
         records = [
-            _make_record(1, viable=True, fitness={"total_duration_ms": 1000, "test_count": 5,
-                                                  "stages_completed": []}),
-            _make_record(2, viable=True, fitness={"total_duration_ms": 2000, "test_count": 3,
-                                                  "stages_completed": []}),
+            _make_record(
+                1,
+                viable=True,
+                fitness={"total_duration_ms": 1000, "test_count": 5, "stages_completed": []},
+            ),
+            _make_record(
+                2,
+                viable=True,
+                fitness={"total_duration_ms": 2000, "test_count": 3, "stages_completed": []},
+            ),
         ]
         summary = compute_campaign_summary(records)
         assert summary["fitness_mean"]["total_duration_ms"] == pytest.approx(1500.0, rel=1e-4)
@@ -767,10 +817,18 @@ class TestComputeCampaignSummary:
         all_stages = ["manifest", "build", "test", "start", "health"]
         records = [
             _make_record(1, viable=True, fitness={"stages_completed": all_stages}),
-            _make_record(2, viable=False, failure_stage="build",
-                         fitness={"stages_completed": ["manifest", "build"]}),
-            _make_record(3, viable=False, failure_stage="test",
-                         fitness={"stages_completed": ["manifest", "build", "test"]}),
+            _make_record(
+                2,
+                viable=False,
+                failure_stage="build",
+                fitness={"stages_completed": ["manifest", "build"]},
+            ),
+            _make_record(
+                3,
+                viable=False,
+                failure_stage="test",
+                fitness={"stages_completed": ["manifest", "build", "test"]},
+            ),
         ]
         summary = compute_campaign_summary(records)
         dist = summary["stages_completed_distribution"]
@@ -908,9 +966,7 @@ class TestDiffSpec:
     def test_frozen_flag_set_on_frozen_section(self) -> None:
         from supervisor.spec_diff import diff_spec
 
-        spec_b_frozen_modified = _SPEC_A.replace(
-            "this must not change", "this has changed!"
-        )
+        spec_b_frozen_modified = _SPEC_A.replace("this must not change", "this has changed!")
         d = diff_spec(_SPEC_A, spec_b_frozen_modified)
         frozen_changed = [sc for sc in d.sections_changed if sc.is_frozen]
         assert any(sc.section_name == "Frozen Section" for sc in frozen_changed)
@@ -1016,10 +1072,20 @@ def _make_valid_spec(extra_sections: str = "") -> str:
     section list below — to avoid triggering the duplicate_heading rule.
     """
     non_frozen = [
-        "What This Document Is", "Glossary", "Problem Statement",
-        "Goals", "Non-Goals", "Design Principles", "What Prime Does", "Contracts",
-        "The Generation Loop", "Failure Handling", "LLM Integration",
-        "Implementation Requirements", "Acceptance Criteria", "Verification Layers",
+        "What This Document Is",
+        "Glossary",
+        "Problem Statement",
+        "Goals",
+        "Non-Goals",
+        "Design Principles",
+        "What Prime Does",
+        "Contracts",
+        "The Generation Loop",
+        "Failure Handling",
+        "LLM Integration",
+        "Implementation Requirements",
+        "Acceptance Criteria",
+        "Verification Layers",
     ]
     sections = "\n".join(f"## {s}\nsome content\n" for s in non_frozen)
     return (
@@ -1623,12 +1689,12 @@ def test_beta():
         fake_response.content = [fake_content]
 
         mock_stream_cm = AsyncMock()
-        mock_stream_cm.__aenter__.return_value.get_final_message = AsyncMock(return_value=fake_response)
+        mock_stream_cm.__aenter__.return_value.get_final_message = AsyncMock(
+            return_value=fake_response
+        )
         with patch("anthropic.AsyncAnthropic") as mock_client_cls:
             mock_client_cls.return_value.messages.stream = MagicMock(return_value=mock_stream_cm)
-            result = await generate_adaptive_tests(
-                summary, "spec text", 0, str(tmp_path)
-            )
+            result = await generate_adaptive_tests(summary, "spec text", 0, str(tmp_path))
 
         assert len(result) >= 1
         assert result[0]["failure_stage"] == "build"

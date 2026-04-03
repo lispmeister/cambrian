@@ -155,7 +155,9 @@ Every artifact Prime produces MUST include `manifest.json` at its root:
 }
 ```
 
-**Field naming convention:** All JSON field names in manifests, generation records, and API bodies use kebab-case (hyphens). Python code uses snake_case internally. The canonical wire format is kebab-case.
+**Field naming convention:** All JSON field names in manifests, generation records, and API bodies use kebab-case (hyphens). Python code uses snake_case internally. The canonical wire format is kebab-case. The contract schema inside `contracts` is an exception and uses snake_case keys (e.g., `body_contains`, `body_has_keys`).
+
+**Viability report naming note:** The viability report schema uses snake_case for historical reasons (e.g., `failure_stage`, `duration_ms`). The `spec-vectors` and `contracts` keys remain kebab-case, and the contract objects inside them use the contract schema (including snake_case keys like `body_contains`). This mixed naming is an intentional exception to the kebab-case rule above.
 
 **MUST fields:** `cambrian-version` (integer, currently 1), `generation` (integer >= 0; 0 is reserved for hand-crafted test artifacts, LLM-generated artifacts MUST use >= 1), `parent-generation` (integer >= 0, 0 for bootstrap), `spec-hash` (SHA-256 hex of the spec file with `sha256:` prefix), `artifact-hash` (SHA-256 hex of all artifact files except `manifest.json` — see algorithm below), `producer-model` (LLM model string), `token-usage` (object with `input` and `output` integers), `files` (array of all file paths, MUST include `manifest.json`, the spec file, and `src/__init__.py`), `created-at` (ISO-8601), `entry.build`, `entry.test`, `entry.start`, `entry.health`.
 

@@ -20,6 +20,7 @@ import structlog
 from aiohttp import ClientSession
 
 from . import prime_runner
+from .supervisor import _make_error_viability
 
 log = structlog.get_logger(component="campaign")
 
@@ -217,7 +218,11 @@ async def run_campaign(
                 # Now safe to clean up the PREVIOUS failed artifact (the prompt has been built)
                 if prev_artifact_dir is not None and prev_artifact_dir.exists():
                     shutil.rmtree(prev_artifact_dir, ignore_errors=True)
-                    log.info("artifact_dir_cleaned", generation=generation - 1, path=str(prev_artifact_dir))
+                    log.info(
+                        "artifact_dir_cleaned",
+                        generation=generation - 1,
+                        path=str(prev_artifact_dir),
+                    )
                 prev_artifact_dir = None
 
             # Step 2: Spawn the test rig on the generated artifact
@@ -257,7 +262,9 @@ async def run_campaign(
     # Clean up any remaining failed artifact from the last generation
     if prev_artifact_dir is not None and prev_artifact_dir.exists():
         shutil.rmtree(prev_artifact_dir, ignore_errors=True)
-        log.info("artifact_dir_cleaned", generation=start_generation + n - 1, path=str(prev_artifact_dir))
+        log.info(
+            "artifact_dir_cleaned", generation=start_generation + n - 1, path=str(prev_artifact_dir)
+        )
 
     summary = compute_campaign_summary(records)
     summary["campaign_id"] = campaign_id
@@ -369,12 +376,7 @@ def _error_record(generation: int, reason: str) -> dict[str, Any]:
     return {
         "generation": generation,
         "outcome": "failed",
-        "viability": {
-            "status": "non-viable",
-            "failure_stage": "none",
-            "summary": reason,
-            "fitness": {},
-        },
+        "viability": _make_error_viability(generation, reason),
     }
 
 

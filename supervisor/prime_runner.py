@@ -95,6 +95,22 @@ def parse_files(response: str) -> dict[str, str]:
     return files
 
 
+def _resolve_artifact_path(artifact_dir: Path, rel_path: str) -> Path:
+    """Resolve a relative artifact path and reject traversal/absolute paths."""
+    if not rel_path or not rel_path.strip():
+        raise ValueError("empty artifact path")
+    rel = Path(rel_path)
+    if rel.is_absolute() or rel.anchor:
+        raise ValueError(f"absolute artifact path: {rel_path}")
+    root = artifact_dir.resolve()
+    resolved = (artifact_dir / rel).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"artifact path escapes root: {rel_path}") from exc
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -352,7 +368,7 @@ async def generate_artifact(
 
         # Write source files
         for rel_path, content in files.items():
-            file_path = artifact_dir / rel_path
+            file_path = _resolve_artifact_path(artifact_dir, rel_path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
 
@@ -393,6 +409,5 @@ async def generate_artifact(
     # All retries failed — clean up and raise
     shutil.rmtree(artifact_dir, ignore_errors=True)
     raise RuntimeError(
-        f"generate_artifact: failed after {_MAX_PARSE_RETRIES} attempts"
-        f" for generation {generation}"
+        f"generate_artifact: failed after {_MAX_PARSE_RETRIES} attempts for generation {generation}"
     )
