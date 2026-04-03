@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-03
-**Total entries:** 27 (plus this index)
+**Total entries:** 28 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -39,6 +39,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-03c  | [journal-2026-04-03c.md](journal-2026-04-03c.md) | P0–P2 fix sweep: path traversal, manifest validation, contract substitution, spec alignment | cambrian-mthk, cambrian-x27f, cambrian-g6ne, cambrian-1iiz |
 | 2026-04-03d  | [journal-2026-04-03d.md](journal-2026-04-03d.md) | Cleared un-awaited coroutine warnings in tests | cambrian-8why |
 | 2026-04-03e  | [journal-2026-04-03e.md](journal-2026-04-03e.md) | Test Rig structlog adoption | cambrian-ad3n |
+| 2026-04-03f  | [journal-2026-04-03f.md](journal-2026-04-03f.md) | Run history snapshot from generations.json | N/A |
 
 ---
 

@@ -10,6 +10,8 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 **M2 Stage 1 running. Bayesian Optimization loop over spec mutations is operational.**
 
+Recent note: the last M2 campaign streak (gens 20–29) failed at the manifest gate due to infra issues that were fixed on 2026-04-03. New runs should reflect organism limits again.
+
 What's done:
 - Phase 0: Supervisor, Test Rig, Docker image, gen-0 validated end-to-end
 - M1: Gen-1 ran 44 minutes, 10 total generations, 5 promoted (gen-4, gen-6, gen-8, gen-9, gen-10), all at 100% test pass rate. 474,834 cumulative tokens.
@@ -29,21 +31,35 @@ This came from [Loom](https://github.com/lispmeister/loom), which tried source-c
 
 ## Architecture
 
-Three components:
+Three components (M2 note: Prime is a logical role; during campaigns the Supervisor invokes `prime_runner` instead of a long‑running Prime service):
 
 - **Prime** — The organism. Reads the spec, calls an LLM, produces a complete codebase, asks the Supervisor to verify it. Contains its own source, its spec, and its running process.
 - **Supervisor** — Host infrastructure. Manages Docker containers, tracks generation history, executes promote/rollback. In M2, orchestrates dual-blind and red-team verification. Not part of the organism — it persists across generations.
 - **Test Rig** — Mechanical verification. Builds the artifact, runs tests, starts the process, checks health contracts and FROZEN spec acceptance vectors. Returns a binary viability verdict. No LLM involved.
 
 ```
-  ┌───────────┐       ┌──────────────┐       ┌───────────┐
-  │   Prime   │──────▶│  Supervisor  │──────▶│ Test Rig  │
-  │ (organism)│  API  │    (host)    │ spawn │(container)│
-  └───────────┘       └──────────────┘       └───────────┘
-       │                     │                      │
-       │ reads spec          │ manages lifecycle    │ builds, tests,
-       │ calls LLM           │ tracks history       │ health-checks
-       │ writes artifact     │ promotes/rolls back  │ writes report
+  ┌───────────────────────────────┐
+  │ Prime (logical role)          │
+  │ - LLM code synthesis          │
+  │ - writes artifact + manifest  │
+  └──────────────┬────────────────┘
+                 │ in M2: prime_runner
+                 │
+                 ▼
+  ┌───────────────────────────────┐
+  │ Supervisor (host)             │
+  │ - tracks generations          │
+  │ - spawns Test Rig containers  │
+  │ - promote / rollback          │
+  └──────────────┬────────────────┘
+                 │ spawn
+                 ▼
+  ┌───────────────────────────────┐
+  │ Test Rig (container)          │
+  │ - build / test / start        │
+  │ - health + spec vectors       │
+  │ - writes viability report     │
+  └───────────────────────────────┘
 ```
 
 ## Repos
@@ -104,9 +120,27 @@ cd cambrian
 source .env
 uv run python -m supervisor.supervisor
 
+# Choose next generation number from artifacts history
+# (uses cambrian-artifacts/generations.json as the source of truth)
+CAMBRIAN_START_GENERATION=$(python - <<'PY'
+import json
+from pathlib import Path
+path = Path("../cambrian-artifacts/generations.json")
+if not path.exists():
+    print(1)
+else:
+    data = json.loads(path.read_text())
+    if not data:
+        print(1)
+    else:
+        last_gen = max(d.get("generation", 0) for d in data)
+        print(last_gen + 1)
+PY
+)
+
 # Run M2 BO loop (terminal 2)
 source .env && \
-  CAMBRIAN_START_GENERATION=1 \
+  CAMBRIAN_START_GENERATION=$CAMBRIAN_START_GENERATION \
   CAMBRIAN_BO_BUDGET=20 \
   CAMBRIAN_CAMPAIGN_LENGTH=5 \
   CAMBRIAN_MINI_CAMPAIGN_N=2 \
@@ -116,6 +150,31 @@ source .env && \
 ```
 
 The BO loop runs until the budget is exhausted and writes `best-spec.md` if any viable spec is found. For a quick smoke test, use `CAMBRIAN_BO_BUDGET=5 CAMBRIAN_CAMPAIGN_LENGTH=2 CAMBRIAN_MINI_CAMPAIGN_N=1 CAMBRIAN_BO_INITIAL_POINTS=3`.
+
+### Generation lifecycle (what happens each run)
+
+1) Prime (via `prime_runner` in M2) reads the spec and generates a full artifact + `manifest.json`.
+2) Supervisor records the attempt and spawns a Test Rig container with the artifact mounted at `/workspace` and an isolated `/output` for the report.
+3) Test Rig runs: manifest → build → test → start → health + spec vectors; writes `/output/viability-report.json`.
+4) Supervisor ingests the report, updates `generations.json`, then promotes or rolls back.
+
+### Generational run notes
+
+- The canonical run history lives in `../cambrian-artifacts/generations.json`.
+- Always start at the next unused generation number (last entry + 1).
+- If `generations.json` is missing or empty, start at generation 1.
+- M2 campaigns create artifacts under `../cambrian-artifacts/campaigns/<campaign-id>/gen-<N>/` but still increment the global generation counter.
+
+### M2 objective and approach (approachable summary)
+
+Objective: make the spec itself evolvable. In M2 we mutate the spec (the genome) and test whether those mutations produce fitter offspring.
+
+How we do it: a Bayesian Optimization loop proposes spec mutations, runs short campaigns, and scores them with a fitness vector derived from the Test Rig. Winning specs are kept; poor specs are rejected.
+
+### Lab journal and experimental data
+
+- The lab journal (`lab-journal/`) is the project’s honest narrative: decisions, failures, fixes, and experimental outcomes are logged chronologically so history can’t be rewritten.
+- Experimental data is captured mechanically in `../cambrian-artifacts/generations.json`. Each generation attempt (success or failure) is recorded with its viability report. This file is the source of truth for run history and generation numbering.
 
 See [CLAUDE.md](CLAUDE.md) for development conventions and issue tracking workflow.
 
