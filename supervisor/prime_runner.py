@@ -44,6 +44,20 @@ Rules:
   single-line strings. A bare newline inside \\"...\\" or '...' is a SyntaxError.
 - Test strings that embed XML-like content MUST use raw strings (r\\"...\\") or
   triple-quoted strings to avoid escaping issues.
+
+Critical patterns (these cause the most failures):
+- structlog: first positional arg IS the event key. Correct: log.info("prime_starting",
+  generation=1). WRONG: log.info("event", event="x") — TypeError: duplicate 'event'.
+  WRONG: log.info("Starting gen %d", n) — structlog does not interpolate.
+- Tests: every test function MUST import its symbols locally (e.g.
+  from src.prime import make_app). A local import in test_health() is NOT visible
+  to test_stats(). Do NOT rely on module-level imports.
+- Tests: use the aiohttp_client pytest fixture. Do NOT use AioHTTPTestCase or
+  @unittest_run_loop — both are deprecated and broken in aiohttp 3.8+.
+- LLM calls: MUST use client.messages.stream(), NOT client.messages.create().
+  The SDK raises an error for large max_tokens with non-streaming calls.
+- JSON field names in wire format use kebab-case (created-at, spec-hash),
+  NOT snake_case. Python variables use snake_case internally.
 """
 
 
@@ -240,6 +254,7 @@ async def generate_artifact(
     history: list[dict[str, Any]] | None = None,
     artifact_rel: str | None = None,
     model: str | None = None,
+    failed_context: dict[str, Any] | None = None,
 ) -> tuple[Path, str, dict[str, int]]:
     """Generate one artifact from spec_text via LLM.
 
@@ -253,6 +268,10 @@ async def generate_artifact(
         history: Generation records for context (optional, full history passed).
         artifact_rel: Relative path within artifacts_root (default: gen-{generation}).
         model: LLM model to use (default: CAMBRIAN_MODEL env var).
+        failed_context: Diagnostics from a previous gen's Test Rig failure.
+            When provided, _build_prompt() adds a "Previous Attempt Failed"
+            section with the failed source code and diagnostics so the LLM
+            can learn from the failure.
 
     Returns:
         (artifact_path, spec_hash, token_usage)
@@ -265,8 +284,6 @@ async def generate_artifact(
 
     spec_hash = _compute_spec_hash(spec_text)
     client = anthropic.AsyncAnthropic()
-
-    failed_context: dict[str, Any] | None = None
     token_usage: dict[str, int] = {"input": 0, "output": 0}
 
     for attempt in range(1, _MAX_PARSE_RETRIES + 1):

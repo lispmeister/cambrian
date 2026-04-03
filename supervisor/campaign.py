@@ -187,6 +187,9 @@ async def run_campaign(
         pass
 
     records: list[dict[str, Any]] = []
+    failed_context: dict[str, Any] | None = None
+    prev_artifact_dir: Path | None = None  # kept alive for failed_context prompt
+
     async with ClientSession() as session:
         for i in range(n):
             generation = start_generation + i
@@ -194,7 +197,7 @@ async def run_campaign(
             artifact_rel = f"campaigns/{campaign_id}/gen-{generation}"
             parent = generation - 1
 
-            # Step 1: Generate artifact via LLM
+            # Step 1: Generate artifact via LLM (with diagnostics from previous failure)
             artifact_dir: Path | None = None
             try:
                 artifact_dir, _, _ = await prime_runner.generate_artifact(
@@ -204,11 +207,18 @@ async def run_campaign(
                     artifacts_root=artifacts_root,
                     history=history,
                     artifact_rel=artifact_rel,
+                    failed_context=failed_context,
                 )
             except Exception as e:
                 log.error("generate_artifact_failed", generation=generation, error=str(e))
                 records.append(_error_record(generation, f"generate_artifact failed: {e}"))
                 continue
+            finally:
+                # Now safe to clean up the PREVIOUS failed artifact (the prompt has been built)
+                if prev_artifact_dir is not None and prev_artifact_dir.exists():
+                    shutil.rmtree(prev_artifact_dir, ignore_errors=True)
+                    log.info("artifact_dir_cleaned", generation=generation - 1, path=str(prev_artifact_dir))
+                prev_artifact_dir = None
 
             # Step 2: Spawn the test rig on the generated artifact
             record = await _run_one_generation(
@@ -220,11 +230,19 @@ async def run_campaign(
                 campaign_id=campaign_id,
             )
 
-            # Step 3: Clean up non-viable artifact dirs — no reason to keep them on disk
+            # Step 3: Build failed_context for the next generation if this one failed
             viable = record.get("viability", {}).get("status") == "viable"
-            if not viable and artifact_dir is not None and artifact_dir.exists():
-                shutil.rmtree(artifact_dir, ignore_errors=True)
-                log.info("artifact_dir_cleaned", generation=generation, path=str(artifact_dir))
+            if not viable:
+                viability = record.get("viability", {})
+                failed_context = {
+                    "diagnostics": viability.get("diagnostics", {}),
+                    "artifact_dir": artifact_dir,
+                }
+                # Keep artifact_dir alive until the next gen's prompt is built
+                prev_artifact_dir = artifact_dir
+            else:
+                failed_context = None
+                prev_artifact_dir = None
 
             records.append(record)
             # Update history for next generation's context
@@ -235,6 +253,11 @@ async def run_campaign(
                 generation=generation,
                 viable=viable,
             )
+
+    # Clean up any remaining failed artifact from the last generation
+    if prev_artifact_dir is not None and prev_artifact_dir.exists():
+        shutil.rmtree(prev_artifact_dir, ignore_errors=True)
+        log.info("artifact_dir_cleaned", generation=start_generation + n - 1, path=str(prev_artifact_dir))
 
     summary = compute_campaign_summary(records)
     summary["campaign_id"] = campaign_id
