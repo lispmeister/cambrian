@@ -143,7 +143,7 @@ def _write_manifest(
         "entry": {
             "build": "uv pip install -r requirements.txt",
             "test": "python -m pytest tests/ -v",
-            "start": "python src/prime.py",
+            "start": "python -m src.prime",
             "health": "http://localhost:8401/health",
         },
     }
