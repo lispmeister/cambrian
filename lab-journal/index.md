@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-03
-**Total entries:** 33 (plus this index)
+**Total entries:** 34 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -45,6 +45,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-03i  | [journal-2026-04-03i.md](journal-2026-04-03i.md) | Gen0 confidence campaign failed (N=1) | N/A |
 | 2026-04-03j  | [journal-2026-04-03j.md](journal-2026-04-03j.md) | Cost estimation script added | cambrian-qhb6 |
 | 2026-04-03k  | [journal-2026-04-03k.md](journal-2026-04-03k.md) | Gen0 confidence campaign (Opus) | N/A |
+| 2026-04-03l  | [journal-2026-04-03l.md](journal-2026-04-03l.md) | Preserve failed gen0 artifacts | cambrian-8d6x |
 
 ---
 

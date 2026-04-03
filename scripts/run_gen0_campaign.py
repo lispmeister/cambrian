@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -108,6 +109,16 @@ async def _run_one_generation(
 
     record = await _wait_for_tested(session, supervisor_url, generation)
     viable = record.get("viability", {}).get("status") == "viable"
+
+    if not viable:
+        # Preserve failed artifact for analysis before rollback
+        failed_dir = (
+            artifacts_root / "gen-0-campaigns" / campaign_id / "failed" / f"gen-{generation}"
+        )
+        if artifact_dir.exists() and not failed_dir.exists():
+            failed_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(artifact_dir, failed_dir)
+
     endpoint = "promote" if viable else "rollback"
     async with session.post(
         f"{supervisor_url}/{endpoint}", json={"generation": generation}
