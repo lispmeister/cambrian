@@ -22,7 +22,7 @@ Examples from your existing entries:
 **Signed:** lispmeister + AI assistant  
 **Date:** YYYY-MM-DD (full ISO timestamp preferred for legal clarity)  
 
-**Participants & Tools:** [e.g. Claude Sonnet 4.6 / Opus 4.x, Python 3.14t, Docker, test_rig vX.Y.Z, etc.]  
+**Participants & Tools:** [Model used in this entry (e.g. GPT-5.2 Codex, Claude Sonnet 4.6), Python 3.14, Docker, test_rig vX.Y.Z, etc.]  
 **Commit / Witness:** [full commit hash or short link — e.g. cambrian-gcq abc1234]  
 **Related Specs / Beads:** [CAMBRIAN-SPEC-005 v0.13.0, BOOTSTRAP-SPEC-002 v0.8.5, bead-XYZ, etc.]
 
