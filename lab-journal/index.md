@@ -3,8 +3,8 @@
 This is the central Table of Contents for the entire lab journal, following Howard M. Kanare’s guidelines in *Writing the Laboratory Notebook*.  
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
-**Last updated:** 2026-04-02
-**Total entries:** 23 (plus this index)
+**Last updated:** 2026-04-03
+**Total entries:** 24 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -34,6 +34,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-01b  | [journal-2026-04-01b.md](journal-2026-04-01b.md) | Fix 11 P2/P3 spec compliance bugs; fix 3 M2 launch blockers (token limit, stale Docker image, /venv permissions); first viable M2 generation (gen 15) | cambrian-dzf M2 Stage 1 |
 | 2026-04-01c  | [journal-2026-04-01c.md](journal-2026-04-01c.md) | Gen-16 diagnosis + spec path fix (v0.14.2); **full viability analysis** of all 16 gens — failure classification, Python brittleness assessment, recommendations for next run | cambrian-u3ig |
 | 2026-04-02   | [journal-2026-04-02.md](journal-2026-04-02.md) | Smoke-import check + parser vectors; campaign gens 17–19 (0/3 viable); manifest validation gate for entry.start; structlog + test-import spec guidance; spec v0.14.3 | cambrian-tbnt, cambrian-jaxs, cambrian-0p3w, cambrian-x44c, cambrian-an2x |
+| 2026-04-03   | [journal-2026-04-03.md](journal-2026-04-03.md) | Campaign gens 20–29 (0/10 viable); all fail at manifest stage — `python src/prime.py` bug persists across 14 gens; spec guidance ineffective; proposed mechanical fix | cambrian-7g1a |
 
 ---
 
