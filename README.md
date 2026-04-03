@@ -164,6 +164,7 @@ The BO loop runs until the budget is exhausted and writes `best-spec.md` if any 
 - Always start at the next unused generation number (last entry + 1).
 - If `generations.json` is missing or empty, start at generation 1.
 - M2 campaigns create artifacts under `../cambrian-artifacts/campaigns/<campaign-id>/gen-<N>/` but still increment the global generation counter.
+- For base-spec self-replication confidence runs, use `uv run python scripts/run_gen0_campaign.py --generations 1 --model claude-sonnet-4-6`. It writes artifacts and a `summary.json` under `../cambrian-artifacts/gen-0-campaigns/<campaign-id>/`.
 
 ### M2 objective and approach (approachable summary)
 
