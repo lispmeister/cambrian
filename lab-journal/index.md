@@ -3,8 +3,8 @@
 This is the central Table of Contents for the entire lab journal, following Howard M. Kanare’s guidelines in *Writing the Laboratory Notebook*.  
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
-**Last updated:** 2026-04-03
-**Total entries:** 36 (plus this index)
+**Last updated:** 2026-04-04
+**Total entries:** 37 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -48,6 +48,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-03l  | [journal-2026-04-03l.md](journal-2026-04-03l.md) | Preserve failed gen0 artifacts | cambrian-8d6x |
 | 2026-04-03m  | [journal-2026-04-03m.md](journal-2026-04-03m.md) | Gen0 confidence campaign (Opus, rerun) | cambrian-8d6x |
 | 2026-04-03n  | [journal-2026-04-03n.md](journal-2026-04-03n.md) | Opus vs Sonnet quality comparison | N/A |
+| 2026-04-04   | [journal-2026-04-04.md](journal-2026-04-04.md) | Confidence campaign gens 36–38; structlog missing from Docker image; container retention for diagnostics | cambrian-7krd, cambrian-p0z0, cambrian-u38m |
 
 ---
 

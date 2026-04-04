@@ -459,9 +459,6 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             },
         )
     finally:
-        if container is not None:
-            with contextlib.suppress(Exception):
-                await container.delete()
         await docker.close()
         # Remove __pycache__ and .pytest_cache left by the container in the bind-mounted
         # workspace. The Dockerfile sets PYTHONDONTWRITEBYTECODE=1 as the primary guard;
