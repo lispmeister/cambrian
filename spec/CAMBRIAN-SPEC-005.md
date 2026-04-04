@@ -479,7 +479,7 @@ Maximum parse retries: `CAMBRIAN_MAX_PARSE_RETRIES` (default 2). A successful pa
 - HTTP client for Supervisor API calls: `aiohttp.ClientSession`. **Supervisor API calls SHOULD use exponential backoff on network errors: start at 1s, double each retry, cap at 60s. Catch `aiohttp.ClientError` specifically — do not swallow all exceptions. Example:**
   ```python
   backoff = 1.0
-  while True:
+  while True:  # Never give up — Prime must not proceed without Supervisor confirmation
       try:
           async with session.get(url) as resp:
               return await resp.json()
