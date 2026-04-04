@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.14.3
+version: 0.14.4
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -89,7 +89,7 @@ Prime MUST serve these endpoints on port 8401:
 | GET | `/stats` | `200 OK` — body: `{"generation": N, "status": "idle", "uptime": S}` |
 
 - `/health` is a liveness check. No preconditions. Always returns 200.
-- `/stats` — `generation` is Prime's own generation number — the value of the `CAMBRIAN_GENERATION` environment variable set by the Supervisor at spawn time (same as the `generation` field in Prime's own manifest). This is a fixed identity; it does not change as the loop produces offspring. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start. If `CAMBRIAN_GENERATION` is not set (e.g., local dev), `generation` is 0.
+- `/stats` — `generation` is Prime's own generation number — the value of the `CAMBRIAN_GENERATION` environment variable set by the Supervisor at spawn time (same as the `generation` field in Prime's own manifest). This is a fixed identity; it does not change as the loop produces offspring. `status` is one of `idle`, `generating`, `verifying`. `uptime` is integer seconds since start. If `CAMBRIAN_GENERATION` is not set (e.g., local dev), `generation` is 0. **`uptime` SHOULD be computed using `time.monotonic()`, not `time.time()` — the system clock can jump backward on NTP adjustments, producing incorrect or negative uptime values.**
 
 ### Supervisor HTTP API (Prime calls these)
 
@@ -476,7 +476,17 @@ Maximum parse retries: `CAMBRIAN_MAX_PARSE_RETRIES` (default 2). A successful pa
 - Python 3.14 (free-threaded build deferred to M2)
 - All I/O-bound code MUST use `asyncio`
 - HTTP server: `aiohttp`
-- HTTP client for Supervisor API calls: `aiohttp.ClientSession`
+- HTTP client for Supervisor API calls: `aiohttp.ClientSession`. **Supervisor API calls SHOULD use exponential backoff on network errors: start at 1s, double each retry, cap at 60s. Catch `aiohttp.ClientError` specifically — do not swallow all exceptions. Example:**
+  ```python
+  backoff = 1.0
+  while True:
+      try:
+          async with session.get(url) as resp:
+              return await resp.json()
+      except aiohttp.ClientError:
+          await asyncio.sleep(backoff)
+          backoff = min(backoff * 2, 60.0)
+  ```
 - LLM API client: `anthropic` Python SDK in async mode (`anthropic.AsyncAnthropic()`). The SDK handles authentication, retries, rate limiting, and streaming — do not reimplement these with raw `aiohttp`.
 - **`call_llm()` MUST use streaming.** Use `async with client.messages.stream(...) as stream: message = await stream.get_final_message()`. Do NOT use `client.messages.create()` — the SDK raises an error for large `max_tokens` values with non-streaming calls. This applies regardless of `max_tokens` value.
 - Logging: `structlog` — every log line includes `timestamp`, `level`, `event`, `component` ("prime"), and `generation` where applicable
@@ -897,7 +907,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.14.3"
+version: "0.14.4"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
