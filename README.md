@@ -18,8 +18,10 @@ What's done:
 - Pre-M2 hardening: 16-bead code review (specs, Python, Docker). Path traversal fix, field naming unification, Docker non-root user, 284 tests across multiple test files, all passing.
 - Verification layers: Three-layer anti-cheating model specced and Layer 1 (FROZEN spec acceptance vectors) implemented. Dual-blind examiner and adversarial red-team specced for M2 Tiers 1–2.
 - M2 Stage 1: Bayesian Optimization loop operational. Grammar-constrained spec mutations, mini-campaign screening, 15-dimension fitness vector, campaign runner, spec diff tooling all implemented and running.
+- Baseline campaign: 8/10 viable (80%) on gens 39–48 with unmodified spec v0.14.4.
+- Phenotypic distiller: AST-based post-campaign analysis that diffs viable vs failed and top-ranked vs bottom-ranked gens, automatically proposes spec amendments from observed code patterns (the Baldwin Effect — phenotypic excellence feeding back into the genome).
 
-Next: Run full M2 campaigns (20 BO iterations) to determine whether spec mutations improve viability rate over the baseline.
+Next: Run full M2 campaigns (20 BO iterations) with distiller-informed mutations to determine whether spec mutations improve viability rate over the 80% baseline.
 
 ## The Idea
 
@@ -98,6 +100,7 @@ spec/
 supervisor/                — Host-side Supervisor (aiohttp server)
 test-rig/                  — Mechanical verification pipeline
 tests/                     — Integration tests (spec compliance, security, lifecycle)
+scripts/                   — Campaign runners, BO loop entry point, analysis tools
 docker/                    — Dockerfile and build script for cambrian-base
 lab-journal/               — Discussion and decision logs
 ```
@@ -165,6 +168,7 @@ The BO loop runs until the budget is exhausted and writes `best-spec.md` if any 
 - If `generations.json` is missing or empty, start at generation 1.
 - M2 campaigns create artifacts under `../cambrian-artifacts/campaigns/<campaign-id>/gen-<N>/` but still increment the global generation counter.
 - For base-spec self-replication confidence runs, use `uv run python scripts/run_gen0_campaign.py --generations 1 --model claude-sonnet-4-6`. It writes artifacts and a `summary.json` under `../cambrian-artifacts/gen-0-campaigns/<campaign-id>/`.
+- After a campaign, run the phenotypic distiller to identify spec improvement opportunities: `uv run python scripts/distill_campaign.py ../cambrian-artifacts/gen-0-campaigns/<campaign-id>`. It outputs a differential analysis report with proposed spec amendments.
 
 ### M2 objective and approach (approachable summary)
 
