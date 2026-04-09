@@ -312,7 +312,9 @@ async def handle_promote(request: web.Request) -> web.Response:
     log.info("generation_promoted", generation=generation, tag=tag)
 
     # Extract baseline battery for counterfactual regression testing (M3)
-    baseline.extract(generation, artifact_path, {**record, "artifact-ref": tag})
+    battery_path = baseline.extract(generation, artifact_path, {**record, "artifact-ref": tag})
+    if battery_path is None:
+        log.warning("baseline_extract_failed", generation=generation)
 
     # Trigger reverse-run: test previous baseline artifact against current Test Rig (M3)
     if prev_battery is not None:
@@ -434,7 +436,12 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
                 "result": result,
             }
         }
-        generations.update(current_generation, record_fields, force=True)
+        generations.update(
+            current_generation,
+            record_fields,
+            force=True,
+            append_only=frozenset({"baseline-reverse-run"}),
+        )
         log.info(
             "baseline_reverse_run_complete",
             current_generation=current_generation,

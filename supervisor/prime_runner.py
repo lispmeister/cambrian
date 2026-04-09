@@ -82,6 +82,10 @@ while True:
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 60.0)
 
+# manifest entry.start — MUST use module form (python src/prime.py breaks imports):
+# "entry": {"start": "python -m src.prime"}   # correct — module form
+# NOT: "entry": {"start": "python src/prime.py"}  # WRONG — breaks intra-package imports
+
 DO NOT:
 - Use time.time() for uptime or elapsed time — use time.monotonic()
 - Use client.messages.create() — use client.messages.stream()
@@ -92,6 +96,7 @@ DO NOT:
 - Use printf-style format strings in structlog — log.info("gen %d", n) does not interpolate
 - JSON field names in wire format use kebab-case (created-at, spec-hash),
   NOT snake_case. Python variables use snake_case internally.
+- Use "python src/prime.py" in entry.start — use "python -m src.prime" (module form)
 """
 
 

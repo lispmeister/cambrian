@@ -304,6 +304,7 @@ def run_structlog_lint() -> dict[str, Any]:
     Returns a diagnostic with file:line and the correct form so the LLM can fix it.
     """
     import ast
+    import re
 
     _LOG_METHODS = {"debug", "info", "warning", "error", "critical", "exception"}
 
@@ -329,7 +330,7 @@ def run_structlog_lint() -> dict[str, Any]:
             # Match log.info(...), log.error(...), etc.
             if not (isinstance(func, ast.Attribute) and func.attr in _LOG_METHODS):
                 continue
-            kwarg_names = {kw.keyword for kw in node.keywords if isinstance(kw, ast.keyword)}
+            kwarg_names = {kw.arg for kw in node.keywords if isinstance(kw, ast.keyword)}
             pos_args = node.args
 
             # Anti-pattern 1: first positional arg is a string AND event= is also a kwarg
@@ -346,11 +347,12 @@ def run_structlog_lint() -> dict[str, Any]:
                 )
 
             # Anti-pattern 2: first positional arg is a string containing % formatting
+            _PRINTF_RE = re.compile(r"%[-+0 #]*\d*\.?\d*[diouxXeEfFgGcrsab]")
             if (
                 pos_args
                 and isinstance(pos_args[0], ast.Constant)
                 and isinstance(pos_args[0].value, str)
-                and any(fmt in pos_args[0].value for fmt in ("%s", "%d", "%r"))
+                and _PRINTF_RE.search(pos_args[0].value)
             ):
                 violations.append(
                     f"{rel}:{node.lineno}: structlog anti-pattern: "
@@ -922,12 +924,9 @@ def run_baseline_check(health_url: str, generation: int) -> dict[str, Any] | Non
     baseline_generation = battery.get("generation")
 
     if not baseline_contracts:
-        return {
-            "baseline-generation": baseline_generation,
-            "passed": True,
-            "duration_ms": 0,
-            "contracts": {},
-        }
+        # No contracts to check — return None so fitness skips baseline_contract_pass_rate
+        # rather than reporting a misleading perfect score.
+        return None
 
     t0 = time.monotonic()
     parsed = urlparse(health_url)
@@ -936,7 +935,14 @@ def run_baseline_check(health_url: str, generation: int) -> dict[str, Any] | Non
     contract_results: dict[str, Any] = {}
     all_passed = True
     for contract in baseline_contracts:
-        name = contract["name"]
+        name = contract.get("name")
+        if not name or not contract.get("path") or not contract.get("expect"):
+            log.warning(
+                "baseline_contract_malformed",
+                generation=generation,
+                contract=contract,
+            )
+            continue
         result = _eval_contract(base, contract, generation)
         contract_results[name] = result
         if not result["passed"]:

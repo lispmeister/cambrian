@@ -76,13 +76,24 @@ def append(record: dict[str, Any]) -> None:
 _TERMINAL_OUTCOMES = {"promoted", "failed", "timeout"}
 
 
-def update(generation: int, fields: dict[str, Any], *, force: bool = False) -> None:
+def update(
+    generation: int,
+    fields: dict[str, Any],
+    *,
+    force: bool = False,
+    append_only: frozenset[str] | None = None,
+) -> None:
     """Update fields on an existing generation record in place.
 
     Rejects updates to records that already have a terminal outcome
     (promoted, failed, timeout) to prevent state corruption, unless
-    force=True is passed (used for post-terminal annotations like
-    baseline-reverse-run results).
+    force=True is passed.
+
+    When force=True, append_only restricts which keys may be written
+    post-terminal, preventing accidental clobber of fields like outcome
+    or viability. If append_only is provided, only those keys from fields
+    are applied; existing record keys with the same name are overwritten
+    only if they were absent before (new keys only for each listed field).
 
     Sets `completed` only when the outcome transitions to a terminal state —
     not on every update (e.g. attaching a viability report leaves completed unset).
@@ -101,7 +112,13 @@ def update(generation: int, fields: dict[str, Any], *, force: bool = False) -> N
                 if current_outcome in _TERMINAL_OUTCOMES and not force:
                     rejected = True
                     return None  # no write needed
-                record.update(fields)
+                # If append_only is specified, only apply those fields
+                effective_fields = (
+                    {k: v for k, v in fields.items() if k in append_only}
+                    if append_only is not None
+                    else fields
+                )
+                record.update(effective_fields)
                 # Only stamp completed when reaching a terminal state
                 new_outcome = record.get("outcome")
                 if new_outcome in _TERMINAL_OUTCOMES and not record.get("completed"):

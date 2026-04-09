@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-09
-**Total entries:** 41 (plus this index)
+**Total entries:** 42 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -53,6 +53,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-04c  | [journal-2026-04-04c.md](journal-2026-04-04c.md) | Phenotypic distiller: AST-based post-campaign analysis, auto-propose spec patches from differential code patterns | cambrian-suxw |
 | 2026-04-09   | [journal-2026-04-09.md](journal-2026-04-09.md) | Rig hardening: structlog lint gate, syntax check, code exemplars in system prompt, failed_context threading, Docker pre-install | cambrian-2sd9 |
 | 2026-04-09b  | [journal-2026-04-09b.md](journal-2026-04-09b.md) | M3 counterfactual baseline battery: log capture, baseline.py, dual-run, reverse-run, fitness delta, §2.13 spec | cambrian-u38m, cambrian-ely0 |
+| 2026-04-09c  | [journal-2026-04-09c.md](journal-2026-04-09c.md) | Adversarial round-two review: fix kw.keyword→kw.arg crash, expand printf regex, module-form exemplar, baseline KeyError guard, force=True scoping, empty-contract false positive | cambrian-2i8l |
 
 ---
 
