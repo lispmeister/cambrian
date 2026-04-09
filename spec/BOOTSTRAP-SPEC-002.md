@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.12.0
+version: 0.13.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -1212,6 +1212,66 @@ The `baseline_contract_pass_rate` metric in the fitness vector (§2.8) measures 
 - Reverse-run `status = "viable"` → old artifact still passes current Test Rig (spec not tightened)
 - Reverse-run `status = "non-viable"` → spec/test gates tightened (old organism would fail now)
 
+### 2.14 Adaptive Test Generation (M2)
+
+After each campaign where viability rate < 1.0, an LLM generates 3–5 targeted pytest test cases probing the dominant failure mode. These are Tier X tests — they supplement (never replace) the fixed Tier 0–3 checks. They are injected into subsequent campaigns as additional test file content.
+
+**Design principles:**
+- Co-evolved under adversarial pressure (inspired by Absolute Zero Reasoner — self-generated tests as orthogonal evaluation pressure)
+- Fixed tiers anchor viability; adaptive tests probe failure surfaces *within* those tiers only
+- Adaptive tests are stateless from the organism's perspective: they arrive as standard pytest fixtures
+
+**Lifecycle:**
+1. After a failed campaign, extract the dominant failure mode from the diagnostics object.
+2. Call LLM (`CAMBRIAN_ADAPTIVE_MODEL`) with the failure context and spec excerpt. Request 3–5 pytest test cases targeting that exact failure.
+3. Store tests in `{CAMBRIAN_ARTIFACTS_ROOT}/adaptive-tests.json` (see schema below).
+4. On next campaign, inject active tests into the artifact as an additional test file.
+5. Each test carries an expiry counter. After `CAMBRIAN_ADAPTIVE_EXPIRE_AFTER` campaigns (default 5), the test is removed.
+6. Cap active tests at `CAMBRIAN_ADAPTIVE_MAX_ACTIVE` (default 10) to prevent bloat.
+
+**Storage schema (`adaptive-tests.json`):**
+```json
+[
+  {
+    "id": "at-<uuid>",
+    "created_at": "2026-04-01T00:00:00Z",
+    "failure_stage": "test",
+    "failure_summary": "KeyError: generation not in /stats response",
+    "test_code": "def test_stats_has_generation(client): ...",
+    "campaigns_remaining": 5
+  }
+]
+```
+
+**Configuration:**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_ADAPTIVE_EXPIRE_AFTER` | MAY | `5` | Campaigns until a test expires. |
+| `CAMBRIAN_ADAPTIVE_MAX_ACTIVE` | MAY | `10` | Max concurrently active adaptive tests. |
+| `CAMBRIAN_ADAPTIVE_TESTS_PER_GENERATION` | MAY | `4` | Tests generated per failure. |
+| `CAMBRIAN_ADAPTIVE_MODEL` | MAY | `CAMBRIAN_ESCALATION_MODEL` then `claude-sonnet-4-6` | LLM for adaptive test generation. |
+| `CAMBRIAN_ADAPTIVE_MAX_TOKENS` | MAY | `2048` | Max tokens for test generation. |
+
+### 2.15 Entanglement Monitoring (M2)
+
+The entanglement monitor measures spec section interdependence across successive mutations. High entanglement means mutations to one section consistently cause failures in other sections — a sign the spec has become over-coupled and mutations are hard to isolate.
+
+**How it works:**
+1. After each spec mutation, compute a `SpecDiff` (section-level diff between parent and child spec).
+2. Track which sections were mutated and which failure stages changed.
+3. Every 5 BO iterations, compute an `EntanglementReport` across the accumulated diffs:
+   - `section_scores`: per-section entanglement score (0.0–1.0). High score = mutations to this section ripple into many others.
+   - `cross_ref_matrix`: N×N matrix of section-to-section correlation.
+   - `entanglement_trend`: slope of the score over recent iterations.
+   - `is_entangling`: true when trend exceeds `ENTANGLEMENT_ALERT_THRESHOLD` (default 0.02).
+
+**Integration with BO loop:**
+- When `is_entangling` is true, log a warning. Future work (Stage 2+): automatically switch to smaller mutations or target less-entangled sections.
+- Entanglement is informational in Stage 1 — it does not stop the BO loop.
+
+**Implementation:** `supervisor/entanglement.py`. Uses `SpecDiff` objects from `supervisor/spec_diff.py`.
+
 ## 3. Docker Infrastructure
 
 ### 3.1 Base Image
@@ -1826,7 +1886,7 @@ These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2
 
 ```yaml
 spec-version: "002"
-version: "0.12.0"
+version: "0.13.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

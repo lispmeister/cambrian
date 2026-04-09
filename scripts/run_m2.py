@@ -10,15 +10,18 @@ Environment variables (all optional with defaults):
     CAMBRIAN_MINI_CAMPAIGN_N    Mini-campaign size (default: 2)
     CAMBRIAN_CAMPAIGN_LENGTH    Full campaign size (default: 5)
     CAMBRIAN_BO_INITIAL_POINTS  Random initial points before GP kicks in (default: 5)
-    CAMBRIAN_START_GENERATION   Starting generation number (default: 1)
+    CAMBRIAN_START_GENERATION   Starting generation number, or "auto" to detect from
+                                /versions (default: auto)
 
 If spec_path is omitted, CAMBRIAN_SPEC_PATH env var is used; if that is also
 unset the default spec at spec/CAMBRIAN-SPEC-005.md is used.
 """
 
 import asyncio
+import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Ensure project root is on sys.path so `supervisor` package is importable
@@ -54,12 +57,14 @@ async def main() -> None:
     # Import here so .env is loaded first
     from supervisor.bo_loop import BOResult, SpecBOLoop
 
-    start_generation = int(os.environ.get("CAMBRIAN_START_GENERATION", "1"))
+    _start_gen_env = os.environ.get("CAMBRIAN_START_GENERATION", "auto")
+    start_generation: int | None = None if _start_gen_env == "auto" else int(_start_gen_env)
     supervisor_url = os.environ.get("CAMBRIAN_SUPERVISOR_URL", "http://localhost:8400")
 
     print("M2 BO loop starting")
     print(f"  Spec:       {spec_path}")
     print(f"  Supervisor: {supervisor_url}")
+    print(f"  Start gen:  {'auto-detect' if start_generation is None else start_generation}")
 
     loop = SpecBOLoop(
         base_spec_path=spec_path,
@@ -79,6 +84,17 @@ async def main() -> None:
         out_path = Path("best-spec.md")
         out_path.write_text(result.best_spec_text)
         print(f"  Best spec written to: {out_path}")
+
+        meta_path = Path("best-spec-meta.json")
+        meta = {
+            "spec_hash": result.best_spec_hash,
+            "viability_rate": result.best_viability,
+            "iterations": result.iterations,
+            "budget_used": result.budget_used,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+        print(f"  Best spec metadata written to: {meta_path}")
 
 
 if __name__ == "__main__":

@@ -302,10 +302,12 @@ async def _run_one_generation(
             return _error_record(generation, f"spawn HTTP {resp.status}: {text[:200]}")
 
     # Poll until the record transitions out of in_progress.
+    # Use campaign-id filter to avoid scanning unrelated records.
+    versions_url = f"{supervisor_url}/versions?campaign-id={campaign_id}"
     deadline = asyncio.get_event_loop().time() + CAMPAIGN_GENERATION_TIMEOUT
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(CAMPAIGN_POLL_INTERVAL)
-        async with session.get(f"{supervisor_url}/versions") as resp:
+        async with session.get(versions_url) as resp:
             if resp.status != 200:
                 continue
             records: list[dict[str, Any]] = await resp.json()

@@ -265,6 +265,29 @@ async def test_versions_returns_all_records(
 
 
 @pytest.mark.asyncio
+async def test_versions_campaign_id_filter(client: TestClient) -> None:
+    from supervisor import generations
+
+    generations.append({"generation": 1, "outcome": "promoted", "campaign-id": "camp-aaa"})
+    generations.append({"generation": 2, "outcome": "promoted", "campaign-id": "camp-bbb"})
+    generations.append({"generation": 3, "outcome": "promoted", "campaign-id": "camp-aaa"})
+
+    resp = await client.get("/versions?campaign-id=camp-aaa")
+    data = await resp.json()
+    assert len(data) == 2
+    assert all(r["campaign-id"] == "camp-aaa" for r in data)
+
+    resp2 = await client.get("/versions?campaign-id=camp-bbb")
+    data2 = await resp2.json()
+    assert len(data2) == 1
+    assert data2[0]["generation"] == 2
+
+    resp3 = await client.get("/versions")
+    data3 = await resp3.json()
+    assert len(data3) == 3
+
+
+@pytest.mark.asyncio
 async def test_debug_state_returns_json(client: TestClient) -> None:
     resp = await client.get("/debug/state")
     assert resp.status == 200
@@ -1416,6 +1439,78 @@ class TestBOLoop:
         loop = SpecBOLoop(spec_path, budget=3)
         expected = len(evolvable_sections(spec))
         assert len(loop.optimizer.space.dimensions) == expected
+
+    def test_bo_loop_persist_and_reload(self, tmp_path: Path) -> None:
+        """Observations persisted to JSONL are reloaded on restart."""
+        from supervisor.bo_loop import BOObservation, SpecBOLoop
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        artifacts_root = tmp_path / "artifacts"
+        artifacts_root.mkdir(exist_ok=True)
+
+        loop1 = SpecBOLoop(spec_path, budget=3, artifacts_root=artifacts_root)
+        # Synthesize an observation and record it
+        obs = BOObservation(
+            spec_hash="sha256:abc",
+            spec_text=spec,
+            features=[0.0] * len(loop1.section_names),
+            mini_viability=0.5,
+            full_viability=0.8,
+            mini_summary={},
+            full_summary={"viability_rate": 0.8},
+            target_section=None,
+        )
+        loop1._record_observation(obs)
+
+        # A new loop instance should reload the observation
+        loop2 = SpecBOLoop(spec_path, budget=3, artifacts_root=artifacts_root)
+        assert len(loop2.observations) == 1
+        assert loop2.observations[0].spec_hash == "sha256:abc"
+        assert loop2.observations[0].full_viability == 0.8
+
+    def test_bo_loop_reload_sets_generation_counter(self, tmp_path: Path) -> None:
+        """Generation counter is advanced past reloaded observations on restart."""
+        from supervisor.bo_loop import BOObservation, SpecBOLoop
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        artifacts_root = tmp_path / "artifacts"
+        artifacts_root.mkdir(exist_ok=True)
+
+        loop1 = SpecBOLoop(spec_path, budget=3, mini_n=2, full_n=5, artifacts_root=artifacts_root)
+        obs = BOObservation(
+            spec_hash="sha256:abc",
+            spec_text=spec,
+            features=[0.0] * len(loop1.section_names),
+            mini_viability=1.0,
+            full_viability=1.0,
+            mini_summary={},
+            full_summary={},
+            target_section=None,
+        )
+        loop1._record_observation(obs)
+
+        loop2 = SpecBOLoop(spec_path, budget=3, mini_n=2, full_n=5, artifacts_root=artifacts_root)
+        # One obs with full campaign: 2 mini + 5 full = 7 gens used; counter = 8
+        assert loop2._generation_counter == 8
+
+    def test_bo_loop_corrupt_jsonl_starts_fresh(self, tmp_path: Path) -> None:
+        """A corrupt JSONL file causes a clean start rather than a crash."""
+        from supervisor.bo_loop import SpecBOLoop
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        artifacts_root = tmp_path / "artifacts"
+        artifacts_root.mkdir(exist_ok=True)
+        (artifacts_root / "bo-observations.jsonl").write_text("not valid json\n")
+
+        loop = SpecBOLoop(spec_path, budget=3, artifacts_root=artifacts_root)
+        assert loop.observations == []
+        assert loop._generation_counter == 1
 
 
 # ---------------------------------------------------------------------------

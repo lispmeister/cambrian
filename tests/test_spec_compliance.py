@@ -199,6 +199,11 @@ class TestFieldNamingConvention:
         # Counterfactual baseline battery (§2.13)
         "CAMBRIAN_BASELINE_PATH",
         "baseline_contract_pass_rate",
+        # Adaptive test storage schema (§2.14) — internal JSON file, not wire format
+        "created_at",
+        "failure_summary",
+        "test_code",
+        "campaigns_remaining",
         # Nested diagnostic/expect fields (dotted paths in table rows)
         "body_contains",
         "body_has_keys",

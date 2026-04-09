@@ -124,7 +124,11 @@ async def handle_stats(request: web.Request) -> web.Response:
 
 
 async def handle_versions(request: web.Request) -> web.Response:
-    return web.json_response(generations.load_all())
+    records = generations.load_all()
+    campaign_id = request.rel_url.query.get("campaign-id")
+    if campaign_id:
+        records = [r for r in records if r.get("campaign-id") == campaign_id]
+    return web.json_response(records)
 
 
 async def handle_debug_state(request: web.Request) -> web.Response:

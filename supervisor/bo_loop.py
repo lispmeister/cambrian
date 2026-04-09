@@ -15,12 +15,17 @@ Reference: cambrian-9ic (campaign runner), cambrian-evw (spec diff),
            cambrian-7cc (type1 mutator), cambrian-3sb (mini-campaign screening).
 """
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass
+import tempfile
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
+from aiohttp import ClientSession
 from skopt import Optimizer
 from skopt.space import Real
 
@@ -146,7 +151,8 @@ class SpecBOLoop:
         full_n: int = _FULL_N,
         screen_threshold: int = _SCREEN_THRESHOLD,
         n_initial_points: int = _N_INITIAL_POINTS,
-        start_generation: int = 1,
+        start_generation: int | None = None,
+        artifacts_root: Path | None = None,
     ) -> None:
         self.base_spec_text = base_spec_path.read_text()
         self.base_spec_path = base_spec_path
@@ -157,7 +163,9 @@ class SpecBOLoop:
         self.mini_n = mini_n
         self.full_n = full_n
         self.screen_threshold = screen_threshold
-        self.start_generation = start_generation
+        self.artifacts_root = artifacts_root or Path(
+            os.environ.get("CAMBRIAN_ARTIFACTS_ROOT", "../cambrian-artifacts")
+        )
 
         # Section names that may be mutated (excludes FROZEN sections)
         self.section_names: list[str] = evolvable_sections(self.base_spec_text)
@@ -173,9 +181,35 @@ class SpecBOLoop:
         )
 
         self.observations: list[BOObservation] = []
-        self._generation_counter = start_generation
         # Accumulated SpecDiff objects — one per successful mutation — for entanglement monitoring.
         self._spec_diffs: list[SpecDiff] = []
+
+        # Reload persisted observations (crash recovery). This must happen before
+        # setting _generation_counter so we can derive the counter from saved state.
+        self._obs_path = self.artifacts_root / "bo-observations.jsonl"
+        self._reload_observations()
+
+        # Determine starting generation number.
+        # If start_generation is explicitly provided, use it.
+        # Otherwise, derive from reloaded observations (crash recovery path).
+        # The async auto-detection from /versions is done in run() before the loop starts.
+        if start_generation is not None:
+            self._generation_counter = start_generation
+            self.start_generation = start_generation
+        elif self.observations:
+            # Derive from the last persisted observation's generation counter.
+            # The observations don't directly store the counter, so we fall back to
+            # counting total campaigns run (mini + full per observation).
+            total_used = sum(
+                self.mini_n + (self.full_n if o.full_viability is not None else 0)
+                for o in self.observations
+            )
+            self._generation_counter = 1 + total_used
+            self.start_generation = self._generation_counter
+        else:
+            # Defer to auto-detection in run()
+            self._generation_counter = 1
+            self.start_generation = 1
 
     async def run(self) -> BOResult:
         """Execute the BO loop up to self.budget iterations.
@@ -188,12 +222,22 @@ class SpecBOLoop:
           5. If mini passes, run full campaign (n=5) to score the spec
           6. Record observation, update BO
         """
+        # Auto-detect start generation from /versions if not set from persisted state.
+        if not self.observations and self._generation_counter == 1:
+            detected = await self._detect_start_generation()
+            if detected > 1:
+                self._generation_counter = detected
+                self.start_generation = detected
+                log.info("bo_loop_generation_auto_detected", start_generation=detected)
+
         log.info(
             "bo_loop_start",
             budget=self.budget,
             sections=len(self.section_names),
             mini_n=self.mini_n,
             full_n=self.full_n,
+            start_generation=self._generation_counter,
+            resuming=len(self.observations) > 0,
         )
 
         # Evaluate the base spec first (establishes the baseline)
@@ -262,6 +306,53 @@ class SpecBOLoop:
 
         return self._make_result()
 
+    async def _detect_start_generation(self) -> int:
+        """Query GET /versions and return max(generation) + 1, or 1 if empty."""
+        try:
+            async with ClientSession() as s:
+                async with s.get(f"{self.supervisor_url}/versions") as resp:
+                    if resp.status == 200:
+                        records: list[dict[str, Any]] = await resp.json()
+                        if records:
+                            return max(r.get("generation", 0) for r in records) + 1
+        except Exception:
+            pass
+        return 1
+
+    def _reload_observations(self) -> None:
+        """Reload persisted observations from bo-observations.jsonl (crash recovery)."""
+        if not self._obs_path.exists():
+            return
+        loaded = 0
+        try:
+            for line in self._obs_path.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                obs = BOObservation(
+                    spec_hash=data["spec_hash"],
+                    spec_text=data["spec_text"],
+                    features=data["features"],
+                    mini_viability=data["mini_viability"],
+                    full_viability=data.get("full_viability"),
+                    mini_summary=data.get("mini_summary", {}),
+                    full_summary=data.get("full_summary"),
+                    target_section=data.get("target_section"),
+                )
+                self.observations.append(obs)
+                # Re-tell the optimizer so the GP is reconstructed from saved data.
+                score = obs.full_viability if obs.full_viability is not None else obs.mini_viability
+                self.optimizer.tell(obs.features, -score)
+                loaded += 1
+        except Exception as exc:
+            log.warning("bo_loop_reload_failed", path=str(self._obs_path), error=str(exc))
+            # Don't crash — start fresh if the file is corrupt.
+            self.observations.clear()
+            return
+        if loaded:
+            log.info("bo_loop_resumed", observations_loaded=loaded, path=str(self._obs_path))
+
     def _check_entanglement(self, current_spec_text: str) -> None:
         """Compute and log the entanglement report; alert if is_entangling."""
         report: EntanglementReport = compute_entanglement_report(
@@ -286,13 +377,9 @@ class SpecBOLoop:
         campaign_index: int = 0,
     ) -> BOObservation | None:
         """Run mini-campaign (+ optionally full campaign) for one spec variant."""
-        import hashlib
-
         spec_hash = f"sha256:{hashlib.sha256(spec_text.encode()).hexdigest()}"
 
         # Write spec to a temp file for the campaign runner
-        import tempfile
-
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".md", delete=False, prefix="spec-candidate-"
         ) as f:
@@ -367,10 +454,20 @@ class SpecBOLoop:
             tmp_path.unlink(missing_ok=True)
 
     def _record_observation(self, obs: BOObservation) -> None:
-        """Update the BO optimizer with the observed viability score."""
+        """Update the BO optimizer with the observed viability score and persist to JSONL."""
         score = obs.full_viability if obs.full_viability is not None else obs.mini_viability
         # skopt minimizes; we maximize viability_rate, so negate it.
         self.optimizer.tell(obs.features, -score)
+
+        # Persist to bo-observations.jsonl for crash recovery.
+        try:
+            self._obs_path.parent.mkdir(parents=True, exist_ok=True)
+            record = asdict(obs)
+            record["timestamp"] = datetime.now(UTC).isoformat()
+            with self._obs_path.open("a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as exc:
+            log.warning("bo_loop_persist_failed", path=str(self._obs_path), error=str(exc))
 
     def _make_result(self) -> BOResult:
         """Assemble the BOResult from all observations."""
