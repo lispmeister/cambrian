@@ -3,8 +3,8 @@
 This is the central Table of Contents for the entire lab journal, following Howard M. Kanare’s guidelines in *Writing the Laboratory Notebook*.  
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
-**Last updated:** 2026-04-04
-**Total entries:** 39 (plus this index)
+**Last updated:** 2026-04-09
+**Total entries:** 40 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -51,6 +51,7 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-04   | [journal-2026-04-04.md](journal-2026-04-04.md) | Confidence campaign gens 36–38; structlog missing from Docker image; container retention for diagnostics | cambrian-7krd, cambrian-p0z0, cambrian-u38m |
 | 2026-04-04b  | [journal-2026-04-04b.md](journal-2026-04-04b.md) | 10-gen campaign (8/10 viable); differential code quality analysis; model cost table; spec v0.14.4 (monotonic uptime, backoff example) | CAMBRIAN-SPEC-005 v0.14.4 |
 | 2026-04-04c  | [journal-2026-04-04c.md](journal-2026-04-04c.md) | Phenotypic distiller: AST-based post-campaign analysis, auto-propose spec patches from differential code patterns | cambrian-suxw |
+| 2026-04-09   | [journal-2026-04-09.md](journal-2026-04-09.md) | Rig hardening: structlog lint gate, syntax check, code exemplars in system prompt, failed_context threading, Docker pre-install | cambrian-2sd9 |
 
 ---
 
