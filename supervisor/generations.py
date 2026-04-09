@@ -76,11 +76,13 @@ def append(record: dict[str, Any]) -> None:
 _TERMINAL_OUTCOMES = {"promoted", "failed", "timeout"}
 
 
-def update(generation: int, fields: dict[str, Any]) -> None:
+def update(generation: int, fields: dict[str, Any], *, force: bool = False) -> None:
     """Update fields on an existing generation record in place.
 
     Rejects updates to records that already have a terminal outcome
-    (promoted, failed, timeout) to prevent state corruption.
+    (promoted, failed, timeout) to prevent state corruption, unless
+    force=True is passed (used for post-terminal annotations like
+    baseline-reverse-run results).
 
     Sets `completed` only when the outcome transitions to a terminal state —
     not on every update (e.g. attaching a viability report leaves completed unset).
@@ -96,7 +98,7 @@ def update(generation: int, fields: dict[str, Any]) -> None:
         for record in records:
             if record.get("generation") == generation:
                 current_outcome = record.get("outcome")
-                if current_outcome in _TERMINAL_OUTCOMES:
+                if current_outcome in _TERMINAL_OUTCOMES and not force:
                     rejected = True
                     return None  # no write needed
                 record.update(fields)

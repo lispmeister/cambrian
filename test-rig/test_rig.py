@@ -27,6 +27,8 @@ WORKSPACE = Path(os.environ.get("CAMBRIAN_WORKSPACE", "/workspace"))
 # Output directory for the viability report — separate from /workspace so the organism
 # (which runs in /workspace) cannot predict or overwrite it.
 OUTPUT_DIR = Path(os.environ.get("CAMBRIAN_OUTPUT_DIR", "/output"))
+# Baseline battery for dual-run regression testing (M3). Mounted read-only by Supervisor.
+BASELINE_PATH = Path(os.environ.get("CAMBRIAN_BASELINE_PATH", "/baseline/battery.json"))
 HEALTH_TIMEOUT = 10  # seconds per health-check request
 TCP_READINESS_TIMEOUT = 30  # seconds to wait for port
 TCP_POLL_INTERVAL = 0.5
@@ -896,6 +898,59 @@ def _run_fallback_health(health_url: str, t0: float) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# M3: Dual-run baseline check
+# ---------------------------------------------------------------------------
+
+
+def run_baseline_check(health_url: str, generation: int) -> dict[str, Any] | None:
+    """Evaluate baseline contracts from the last promoted generation against the running server.
+
+    Loaded from CAMBRIAN_BASELINE_PATH (battery.json mounted by the Supervisor).
+    Results are INFORMATIONAL — they do not affect viability, only fitness.
+    Returns None if no baseline is present or the battery has no contracts.
+    """
+    if not BASELINE_PATH.exists():
+        return None
+
+    try:
+        battery = json.loads(BASELINE_PATH.read_text())
+    except Exception as e:
+        log.warning("baseline_battery_load_failed", path=str(BASELINE_PATH), error=str(e))
+        return None
+
+    baseline_contracts: list[dict[str, Any]] = battery.get("contracts", [])
+    baseline_generation = battery.get("generation")
+
+    if not baseline_contracts:
+        return {
+            "baseline-generation": baseline_generation,
+            "passed": True,
+            "duration_ms": 0,
+            "contracts": {},
+        }
+
+    t0 = time.monotonic()
+    parsed = urlparse(health_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    contract_results: dict[str, Any] = {}
+    all_passed = True
+    for contract in baseline_contracts:
+        name = contract["name"]
+        result = _eval_contract(base, contract, generation)
+        contract_results[name] = result
+        if not result["passed"]:
+            all_passed = False
+
+    return {
+        "baseline-generation": baseline_generation,
+        "passed": all_passed,
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+        "contracts": contract_results,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Fitness vector
 # ---------------------------------------------------------------------------
 
@@ -994,6 +1049,15 @@ def compute_fitness(
         total = len(sv_data)
         passed = sum(1 for v in sv_data.values() if v.get("passed"))
         fitness["spec_vector_pass_rate"] = round(passed / total, 4) if total > 0 else 1.0
+
+    # Baseline contract pass rate — regression score vs last promoted generation (M3).
+    # 1.0 = full backward compatibility; <1.0 = some baseline contracts broken.
+    baseline_data = health_result.get("baseline-contracts")
+    if baseline_data is not None and isinstance(baseline_data, dict):
+        baseline_contracts = baseline_data.get("contracts", {})
+        total = len(baseline_contracts)
+        passed = sum(1 for v in baseline_contracts.values() if v.get("passed"))
+        fitness["baseline_contract_pass_rate"] = round(passed / total, 4) if total > 0 else 1.0
 
     # Discount weights for selection policies.
     # Self-referential dimensions (organism controls its own tests) get weight 0.5.
@@ -1362,6 +1426,20 @@ def run_pipeline() -> None:
     health_result = run_health_check(
         health_url, contracts, generation, manifest, preread_spec_vectors
     )
+
+    # M3 dual-run: evaluate baseline contracts against the running server (informational).
+    # Must run before killing the process — server is still up at this point.
+    baseline_check = run_baseline_check(health_url, generation)
+    if baseline_check is not None:
+        health_result = dict(health_result)
+        health_result["baseline-contracts"] = baseline_check
+        log.info(
+            "baseline_check_complete",
+            baseline_generation=baseline_check.get("baseline-generation"),
+            passed=baseline_check["passed"],
+            contracts=len(baseline_check.get("contracts", {})),
+        )
+
     checks["health"] = health_result
     stages_completed.append("health")
 

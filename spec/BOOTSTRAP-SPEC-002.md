@@ -1099,6 +1099,99 @@ This ensures daemonized children that detach from the parent process (e.g., `sub
 |----------|----------|---------|---------|
 | `CAMBRIAN_OUTPUT_DIR` | MAY | `/output` | Directory where the Test Rig writes `viability-report.json`. MUST be on the isolated output mount, not `/workspace`. |
 
+### 2.13 Counterfactual Baseline Battery (M3)
+
+**Applies to M1+.** After each promoted generation, the Supervisor extracts a baseline battery from that generation's manifest contracts. Subsequent generations are tested against this baseline to detect regressions and measure fitness delta.
+
+**Why this matters:** Without a stable reference point, it is impossible to distinguish between a generation that improved and one that merely changed. The baseline battery provides a fixed target — the behavioral promises the last successful organism made — against which new organisms are compared.
+
+#### Baseline Battery Extraction
+
+After a generation is promoted, the Supervisor (`supervisor/baseline.py`) saves a battery file at:
+
+```
+{CAMBRIAN_ARTIFACTS_ROOT}/baselines/gen-{N}/battery.json
+```
+
+**Battery schema:**
+
+```json
+{
+  "generation": 42,
+  "created-at": "2026-04-09T...",
+  "spec-hash": "sha256:...",
+  "artifact-hash": "sha256:...",
+  "artifact-ref": "gen-42",
+  "contracts": [...]
+}
+```
+
+The `contracts` array is copied verbatim from `manifest.json`. If the manifest had no contracts, the battery has an empty array. The battery is immutable once written.
+
+#### Dual-Run (Forward pass, M3)
+
+When testing a new generation, the Supervisor mounts the latest baseline battery read-only at `/baseline/battery.json` in the Test Rig container and sets `CAMBRIAN_BASELINE_PATH=/baseline/battery.json`.
+
+The Test Rig, after completing its normal health check (spec vectors + manifest contracts), evaluates the baseline contracts against the running artifact's server. Results appear in the viability report under `checks.health.baseline-contracts`:
+
+```json
+{
+  "baseline-generation": 42,
+  "passed": true,
+  "duration_ms": 45,
+  "contracts": {
+    "contract-name": {"passed": true, "duration_ms": 12}
+  }
+}
+```
+
+**Key properties:**
+- Baseline contract results are **informational** — they do not affect viability.
+- The server must be running when baseline checks execute (they run before process kill).
+- The `baseline_contract_pass_rate` fitness metric measures backward compatibility: `1.0` = full compatibility, `<1.0` = regression against the baseline's behavioral promises.
+- A new generation's `baseline_contract_pass_rate` is absent if no baseline exists yet (first promoted generation).
+
+#### Reverse-Run (Backward pass, M3)
+
+After a generation is promoted, the Supervisor fires a background task that runs the **previous** baseline artifact through the current Test Rig. This answers: "does our test harness still accept the last organism we promoted?"
+
+The result is stored in the promoted generation's record under `baseline-reverse-run`:
+
+```json
+{
+  "baseline-generation": 41,
+  "result": {
+    "status": "viable",
+    "failure_stage": "none",
+    "fitness": { ... }
+  }
+}
+```
+
+If the reverse-run fails, it means the current Test Rig has become stricter — the previous organism would no longer pass. This is a signal that the spec or test gates have tightened (useful for M2 spec mutation tracking).
+
+**2×2 regression matrix** for generation N (stored across the record and viability report):
+
+| | New spec/tests (gen N) | Old contracts (gen N-1) |
+|---|---|---|
+| **New artifact (gen N)** | `checks.health` (normal) | `checks.health.baseline-contracts` |
+| **Old artifact (gen N-1)** | `baseline-reverse-run.result` | Always passes (was promoted) |
+
+#### Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_BASELINE_PATH` | MAY | `/baseline/battery.json` | Path inside the Test Rig container to the baseline battery JSON. Set by the Supervisor when a baseline exists. |
+
+#### Fitness delta
+
+The `baseline_contract_pass_rate` metric in the fitness vector (§2.8) measures how many of the baseline's behavioral contracts the new artifact satisfies. Combined with `contract_pass_rate` (new contracts) and the reverse-run result, the full regression picture is:
+
+- `contract_pass_rate = 1.0` → new artifact satisfies its own promises
+- `baseline_contract_pass_rate = 1.0` → new artifact also satisfies old promises (no regression)
+- Reverse-run `status = "viable"` → old artifact still passes current Test Rig (spec not tightened)
+- Reverse-run `status = "non-viable"` → spec/test gates tightened (old organism would fail now)
+
 ## 3. Docker Infrastructure
 
 ### 3.1 Base Image

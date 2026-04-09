@@ -17,7 +17,7 @@ import aiodocker
 import structlog
 from aiohttp import web
 
-from . import generations, git_ops
+from . import baseline, generations, git_ops
 
 log = structlog.get_logger(component="supervisor")
 
@@ -303,9 +303,21 @@ async def handle_promote(request: web.Request) -> web.Response:
         _set_status("idle")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
+    # Capture previous baseline BEFORE extracting new one (needed for reverse-run)
+    prev_battery = baseline.latest()
+
+    record = generations.get(generation) or {}
     generations.update(generation, {"outcome": "promoted", "artifact-ref": tag})
     _set_status("idle")
     log.info("generation_promoted", generation=generation, tag=tag)
+
+    # Extract baseline battery for counterfactual regression testing (M3)
+    baseline.extract(generation, artifact_path, {**record, "artifact-ref": tag})
+
+    # Trigger reverse-run: test previous baseline artifact against current Test Rig (M3)
+    if prev_battery is not None:
+        asyncio.ensure_future(run_baseline_reverse_run(generation, prev_battery))
+
     return web.json_response({"ok": True, "generation": generation})
 
 
@@ -337,6 +349,109 @@ async def handle_rollback(request: web.Request) -> web.Response:
     _set_status("idle")
     log.info("generation_rolled_back", generation=generation, tag=tag)
     return web.json_response({"ok": True, "generation": generation})
+
+
+# ---------------------------------------------------------------------------
+# M3: Baseline reverse-run — test old artifact against current Test Rig
+# ---------------------------------------------------------------------------
+
+
+async def run_baseline_reverse_run(current_generation: int, battery: dict[str, Any]) -> None:
+    """Run the baseline artifact through the current Test Rig (reverse-run, M3).
+
+    Detects spec weakening: if the old artifact still passes the current Test Rig,
+    the new generation's spec/tests are not harder than the baseline's.
+
+    Result is recorded in the CURRENT generation's record under 'baseline-reverse-run'
+    using force=True to bypass the terminal-state guard.
+    """
+    baseline_gen = battery.get("generation")
+    baseline_artifact_rel = battery.get("artifact-ref", f"gen-{baseline_gen}")
+    artifacts_root_path = Path(git_ops.artifacts_root()).resolve()
+    baseline_artifact_path = (artifacts_root_path / baseline_artifact_rel).resolve()
+
+    if not baseline_artifact_path.exists():
+        log.warning(
+            "baseline_reverse_run_skipped",
+            current_generation=current_generation,
+            baseline_gen=baseline_gen,
+            reason="artifact path does not exist",
+            path=str(baseline_artifact_path),
+        )
+        return
+
+    container_id = f"cambrian-reverse-{current_generation}"
+    output_dir = Path(tempfile.mkdtemp(prefix="cambrian-reverse-output-"))
+    docker = aiodocker.Docker()
+    try:
+        config: dict[str, Any] = {
+            "Image": DOCKER_IMAGE,
+            "Env": [
+                f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
+                f"CAMBRIAN_SUPERVISOR_URL={SUPERVISOR_URL}",
+                f"CAMBRIAN_GENERATION={baseline_gen}",
+            ],
+            "HostConfig": {
+                "Binds": [
+                    f"{baseline_artifact_path}:/workspace:rw",
+                    f"{output_dir.resolve()}:/output:rw",
+                ],
+            },
+        }
+        container = await docker.containers.create_or_replace(name=container_id, config=config)
+        await container.start()
+        log.info(
+            "baseline_reverse_run_started",
+            current_generation=current_generation,
+            baseline_gen=baseline_gen,
+            container_id=container_id,
+        )
+
+        try:
+            await asyncio.wait_for(container.wait(), timeout=float(CONTAINER_TIMEOUT))
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await container.kill()
+            result: dict[str, Any] = {"status": "timeout"}
+        else:
+            report_path = output_dir / "viability-report.json"
+            if report_path.exists():
+                try:
+                    report = json.loads(report_path.read_text())
+                    result = {
+                        "status": report.get("status", "unknown"),
+                        "failure_stage": report.get("failure_stage"),
+                        "fitness": report.get("fitness", {}),
+                    }
+                except Exception as e:
+                    result = {"status": "error", "error": str(e)}
+            else:
+                result = {"status": "no-report"}
+
+        record_fields = {
+            "baseline-reverse-run": {
+                "baseline-generation": baseline_gen,
+                "result": result,
+            }
+        }
+        generations.update(current_generation, record_fields, force=True)
+        log.info(
+            "baseline_reverse_run_complete",
+            current_generation=current_generation,
+            baseline_gen=baseline_gen,
+            status=result.get("status"),
+        )
+
+    except Exception as e:
+        log.warning(
+            "baseline_reverse_run_failed",
+            current_generation=current_generation,
+            baseline_gen=baseline_gen,
+            error=str(e),
+        )
+    finally:
+        await docker.close()
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -403,16 +518,31 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             if val is not None:
                 env_list.append(f"{var}={val}")
 
+        # M3 baseline dual-run: mount the latest baseline battery read-only.
+        # The Test Rig reads it from /baseline/battery.json to evaluate baseline contracts.
+        binds: list[str] = [
+            f"{artifact_path.resolve()}:/workspace:rw",
+            # Separate output mount: Test Rig writes report here.
+            # Organism code runs in /workspace and cannot predict this path.
+            f"{output_dir.resolve()}:/output:rw",
+        ]
+        latest_battery = baseline.latest()
+        if latest_battery is not None:
+            battery_host_path = baseline.battery_path_for(latest_battery["generation"])
+            if battery_host_path.exists():
+                binds.append(f"{battery_host_path.resolve()}:/baseline/battery.json:ro")
+                env_list.append("CAMBRIAN_BASELINE_PATH=/baseline/battery.json")
+                log.info(
+                    "baseline_battery_mounted",
+                    generation=generation,
+                    baseline_generation=latest_battery["generation"],
+                )
+
         config: dict[str, Any] = {
             "Image": DOCKER_IMAGE,
             "Env": env_list,
             "HostConfig": {
-                "Binds": [
-                    f"{artifact_path.resolve()}:/workspace:rw",
-                    # Separate output mount: Test Rig writes report here.
-                    # Organism code runs in /workspace and cannot predict this path.
-                    f"{output_dir.resolve()}:/output:rw",
-                ],
+                "Binds": binds,
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)
@@ -427,9 +557,19 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             log.warning("container_timeout", generation=generation, timeout=CONTAINER_TIMEOUT)
             with contextlib.suppress(Exception):
                 await container.kill()
+            with contextlib.suppress(Exception):
+                log_lines = await container.log(stdout=True, stderr=True)
+                (artifact_path / "container.log").write_text("\n".join(log_lines))
+                log.info("container_log_captured", generation=generation, outcome="timeout")
             generations.update(generation, {"outcome": "timeout"})
             _set_status("idle")
             return
+
+        # Capture container logs to the artifact directory for diagnostics
+        with contextlib.suppress(Exception):
+            log_lines = await container.log(stdout=True, stderr=True)
+            (artifact_path / "container.log").write_text("\n".join(log_lines))
+            log.info("container_log_captured", generation=generation)
 
         # Read viability report from the isolated output directory
         report_path = output_dir / "viability-report.json"
