@@ -175,31 +175,43 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 
 ## M2 Context
 
-M1 (autonomous reproduction loop) is complete. M2 (spec mutation + selection) is next. Before starting any M2 work, read this section.
+M1 (autonomous reproduction loop) is complete. M2 infrastructure (spec mutation + selection) is implemented and ready to run. Before starting any M2 work, read this section.
 
-### Critical Path
+### M2 Infrastructure — Implemented (as of 2026-04-09)
 
-`cambrian-2cf` (container isolation hardening, P1) is the prerequisite for all M2 population runs. An adversarial review found that organism and Test Rig share a filesystem volume — under selection pressure, evolved code could write a fake viability report. This must be fixed before running campaigns.
+All M2 prerequisites are done. The beads tracker was reset; these are recorded here for traceability.
 
-### Ready Beads (no blockers, pick up in this order)
-
-| ID | Priority | Title | Why first |
-|----|----------|-------|-----------|
-| `cambrian-4do` | P1 | Implement Layer 1 spec-vector evaluation | Closes the anti-cheating loop — spec is written, ~50 lines of code |
-| `cambrian-2cf` | P1 | Harden container isolation | Unblocks all M2 population runs |
-| `cambrian-mw0` | P2 | 15-dimension fitness vector | Required for selection between viable organisms |
-| `cambrian-evw` | P2 | Spec diff tooling + section attribution | Required for directed spec mutation |
-| `cambrian-9ic` | P2 | Campaign runner | Coordinates N generations against one spec |
+| Commit | What | Module |
+|--------|------|--------|
+| `033e90b` (cambrian-4do) | Layer 1 spec-vector evaluation | `test-rig/test_rig.py` |
+| `b1b8fd0` (cambrian-2cf) | Container isolation hardening (separate `/output` mount) | `supervisor/supervisor.py`, `test_rig.py` |
+| `6d5ad12` (cambrian-mw0) | 15-dimension fitness vector with discount weights | `test-rig/test_rig.py` |
+| `c7f1da0` (cambrian-evw) | Spec diff tooling + section attribution | `supervisor/spec_diff.py` |
+| `08e9eca` (cambrian-9ic) | Campaign runner | `supervisor/campaign.py` |
+| various | Spec grammar validator + coherence screening | `supervisor/spec_grammar.py` |
+| various | Type-1 spec mutator (LLM section rewrite) | `supervisor/spec_mutator.py` |
+| various | Bayesian optimisation loop over spec variants | `supervisor/bo_loop.py` |
+| various | Phenotypic distiller + baseline battery | `supervisor/baseline.py` |
 
 ### Verification Layers Status
 
-Three layers are specced in CAMBRIAN-SPEC-005 § Verification Layers. As of 2026-03-30:
+Three layers are specced in CAMBRIAN-SPEC-005 § Verification Layers. As of 2026-04-09:
 
 | Layer | Status |
 |-------|--------|
-| Layer 1: FROZEN spec acceptance vectors | Specced ✓, not yet implemented in test_rig.py (`cambrian-4do`) |
-| Layer 2: Dual-blind LLM examiner | Specced ✓ (BOOTSTRAP-SPEC-002 §2.10), M2 Tier 1 |
-| Layer 3: Adversarial red-team | Specced ✓ (BOOTSTRAP-SPEC-002 §2.11), M2 Tier 2 |
+| Layer 1: FROZEN spec acceptance vectors | Implemented ✓ (`test_rig.py`, commit `033e90b`) |
+| Layer 2: Dual-blind LLM examiner | Specced ✓ (BOOTSTRAP-SPEC-002 §2.10), not yet implemented |
+| Layer 3: Adversarial red-team | Specced ✓ (BOOTSTRAP-SPEC-002 §2.11), not yet implemented |
+
+### What's Next
+
+The machinery is in place. The next steps are operational:
+
+1. **Run a real M2 campaign** — invoke `run_campaign()` / `SpecBOLoop` against the current spec and see where viability lands. This will surface integration gaps.
+2. **Layer 2: Dual-Blind Examiner** — post-viability LLM examiner (BOOTSTRAP-SPEC-002 §2.10); activates at `CAMBRIAN_MODE=m2`.
+3. **Layer 3: Red-Team** — adversarial LLM check (BOOTSTRAP-SPEC-002 §2.11); activates at M2 Tier 2.
+
+Open a bead before starting any of these.
 
 ### Budget
 
@@ -207,7 +219,7 @@ Default model: `claude-sonnet-4-6` (~$0.30/attempt). Ask the user before using `
 
 ### M2 Deferred Items
 
-These are known issues intentionally deferred from the pre-M2 hardening. Do not implement them as side effects of other work — open a bead first:
+These are known issues intentionally deferred. Do not implement them as side effects of other work — open a bead first:
 
 - Pydantic v2 models (currently using `dict[str, Any]` throughout)
 - `asyncio.Lock` on generation store + spawn guard
