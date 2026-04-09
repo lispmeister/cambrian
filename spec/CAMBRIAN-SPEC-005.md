@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.14.4
+version: 0.15.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -383,6 +383,59 @@ Rules:
   single-line strings. A bare newline inside "..." or '...' is a SyntaxError.
 - Test strings that embed XML-like content (e.g. <file> blocks) MUST use raw strings
   (r"...") or triple-quoted strings to avoid escaping issues.
+
+CORRECT PATTERNS — copy these exactly, they are verified to work:
+
+# structlog — first positional arg IS the event string, never pass event= as kwarg:
+log = structlog.get_logger(component="prime")
+log.info("prime_starting", generation=1)          # correct
+log.info("loop_error", error=str(e), generation=n) # correct
+
+# Uptime — MUST use monotonic clock (time.time() can jump backward on NTP sync):
+_start_time: float = time.monotonic()
+uptime = int(time.monotonic() - _start_time)
+
+# aiohttp tests — EVERY test function imports the symbols it needs locally:
+async def test_health(aiohttp_client):
+    from src.prime import make_app   # local import — required in every test function
+    client = await aiohttp_client(make_app())
+    resp = await client.get("/health")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == {"ok": True}
+
+# LLM calls — MUST stream (client.messages.create raises for large max_tokens):
+async with client.messages.stream(
+    model=model, max_tokens=32768, system=system_prompt,
+    messages=[{"role": "user", "content": prompt}]
+) as stream:
+    message = await stream.get_final_message()
+
+# Supervisor API calls — MUST use exponential backoff on ClientError:
+backoff = 1.0
+while True:
+    try:
+        async with session.post(url, json=body) as resp:
+            return await resp.json()
+    except aiohttp.ClientError:
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 60.0)
+
+# manifest entry.start — MUST use module form (python src/prime.py breaks imports):
+# "entry": {"start": "python -m src.prime"}   # correct — module form
+# NOT: "entry": {"start": "python src/prime.py"}  # WRONG — breaks intra-package imports
+
+DO NOT:
+- Use time.time() for uptime or elapsed time — use time.monotonic()
+- Use client.messages.create() — use client.messages.stream()
+- Use AioHTTPTestCase or @unittest_run_loop — use aiohttp_client fixture
+- Use module-level imports in test functions — import locally inside each def
+- Use bare except Exception: for HTTP calls — catch aiohttp.ClientError specifically
+- Pass event= as a keyword arg to structlog — log.info("event", event="x") crashes
+- Use printf-style format strings in structlog — log.info("gen %d", n) does not interpolate
+- JSON field names in wire format use kebab-case (created-at, spec-hash),
+  NOT snake_case. Python variables use snake_case internally.
+- Use "python src/prime.py" in entry.start — use "python -m src.prime" (module form)
 ```
 
 **User message:**
@@ -907,7 +960,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.14.4"
+version: "0.15.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"
