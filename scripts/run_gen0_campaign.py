@@ -82,7 +82,13 @@ async def _run_one_generation(
     parent: int,
     campaign_id: str,
     model: str,
-) -> dict[str, Any]:
+    failed_context: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], Path | None]:
+    """Run one generation. Returns (record, artifact_dir).
+
+    artifact_dir is returned so the caller can keep it alive for failed_context
+    prompt building in the next generation, then clean it up.
+    """
     artifact_rel = f"gen-0-campaigns/{campaign_id}/gen-{generation}"
     artifact_dir, _, _ = await prime_runner.generate_artifact(
         spec_text=spec_text,
@@ -92,6 +98,7 @@ async def _run_one_generation(
         history=await _fetch_versions(session, supervisor_url),
         artifact_rel=artifact_rel,
         model=model,
+        failed_context=failed_context,
     )
 
     log.info("artifact_generated", generation=generation, path=str(artifact_dir))
@@ -130,7 +137,8 @@ async def _run_one_generation(
     log.info("generation_finalized", generation=generation, viable=viable)
     record = dict(record)
     record["outcome"] = "promoted" if viable else "failed"
-    return record
+    # Return artifact_dir for failed_context lifecycle management
+    return record, artifact_dir
 
 
 async def main() -> int:
@@ -178,21 +186,54 @@ async def main() -> int:
         await _fetch_versions(session, args.supervisor_url)
 
         records: list[dict[str, Any]] = []
+        failed_context: dict[str, Any] | None = None
+        prev_artifact_dir: Path | None = None  # kept alive for failed_context prompt
+
         for i in range(args.generations):
             generation = start_generation + i
             parent = generation - 1
-            record = await _run_one_generation(
-                session=session,
-                supervisor_url=args.supervisor_url,
-                artifacts_root=artifacts_root,
-                spec_text=spec_text,
-                spec_hash=spec_hash,
-                generation=generation,
-                parent=parent,
-                campaign_id=campaign_id,
-                model=args.model,
-            )
+
+            try:
+                record, artifact_dir = await _run_one_generation(
+                    session=session,
+                    supervisor_url=args.supervisor_url,
+                    artifacts_root=artifacts_root,
+                    spec_text=spec_text,
+                    spec_hash=spec_hash,
+                    generation=generation,
+                    parent=parent,
+                    campaign_id=campaign_id,
+                    model=args.model,
+                    failed_context=failed_context,
+                )
+            finally:
+                # Safe to clean up previous failed artifact now that the prompt was built
+                if prev_artifact_dir is not None and prev_artifact_dir.exists():
+                    shutil.rmtree(prev_artifact_dir, ignore_errors=True)
+                    log.info(
+                        "artifact_dir_cleaned",
+                        generation=generation - 1,
+                        path=str(prev_artifact_dir),
+                    )
+                prev_artifact_dir = None
+
+            viable = record.get("outcome") == "promoted"
+            if not viable:
+                viability = record.get("viability", {})
+                failed_context = {
+                    "diagnostics": viability.get("diagnostics", {}),
+                    "artifact_dir": artifact_dir,
+                }
+                prev_artifact_dir = artifact_dir  # keep alive for next gen's prompt
+            else:
+                failed_context = None
+                prev_artifact_dir = None
+
             records.append(record)
+
+        # Clean up any remaining failed artifact from the last generation
+        if prev_artifact_dir is not None and prev_artifact_dir.exists():
+            shutil.rmtree(prev_artifact_dir, ignore_errors=True)
 
     viable = sum(1 for r in records if r.get("outcome") == "promoted")
     summary = {

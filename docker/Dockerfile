@@ -15,8 +15,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 RUN uv venv /venv
 ENV PATH="/venv/bin:$PATH"
 
-# Install Test Rig dependencies
-RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp pyyaml structlog
+# Install Test Rig dependencies + organism core deps (pre-installed so minor requirements.txt
+# issues don't kill the build; every viable generation needs these packages)
+RUN uv pip install --no-cache-dir aiohttp pytest pytest-asyncio pytest-aiohttp pyyaml structlog anthropic pydantic
 
 # Create a non-root user — the Test Rig should not run as root
 RUN useradd -m -s /bin/bash cambrian && chown -R cambrian:cambrian /venv
@@ -25,6 +26,11 @@ RUN useradd -m -s /bin/bash cambrian && chown -R cambrian:cambrian /venv
 COPY test-rig/ /test-rig/
 
 WORKDIR /workspace
+
+# Ensure intra-package imports (from src.loop import ...) work regardless of invocation form.
+# The manifest validation gate catches script-form start commands at Stage 1; this is a
+# belt-and-suspenders fallback for any import edge cases that slip through.
+ENV PYTHONPATH=/workspace
 
 USER cambrian
 

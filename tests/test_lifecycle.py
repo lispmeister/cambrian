@@ -510,11 +510,13 @@ class TestDockerMockCorrectness:
         with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
             await sup.run_test_rig(1, artifact_path, "lab-gen-1")
 
-        # Verify the correct lifecycle: create_or_replace → start → wait → delete
+        # Verify the correct lifecycle: create_or_replace → start → wait
+        # Note: delete() is intentionally NOT called (cambrian-p0z0) — containers are
+        # retained after the test rig exits so logs can be inspected with docker logs.
         mock_docker.containers.create_or_replace.assert_called_once()
         mock_container.start.assert_called_once()
         mock_container.wait.assert_called_once()
-        mock_container.delete.assert_called_once()
+        mock_container.delete.assert_not_called()
         mock_docker.close.assert_called_once()
 
 

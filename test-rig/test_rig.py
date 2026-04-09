@@ -256,6 +256,116 @@ def run_build(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Pre-test: Syntax check + structlog lint
+# ---------------------------------------------------------------------------
+
+
+def run_syntax_check() -> dict[str, Any]:
+    """Compile every .py file in WORKSPACE with ast.parse().
+
+    Catches Python 3.14 SyntaxErrors (unescaped newlines in strings, etc.) before
+    pytest runs, producing a clear file:line diagnostic instead of a confusing
+    pytest collection error.
+    """
+    import ast
+
+    t0 = time.monotonic()
+    errors: list[str] = []
+    for path in sorted(WORKSPACE.rglob("*.py")):
+        try:
+            src = path.read_text(encoding="utf-8", errors="replace")
+            ast.parse(src, filename=str(path))
+        except SyntaxError as e:
+            rel = path.relative_to(WORKSPACE)
+            errors.append(f"{rel}:{e.lineno}: {e.msg}")
+        except OSError:
+            pass
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if errors:
+        extra = f" (and {len(errors) - 5} more)" if len(errors) > 5 else ""
+        return {
+            "passed": False,
+            "duration_ms": duration_ms,
+            "error": "; ".join(errors[:5]) + extra,
+        }
+    return {"passed": True, "duration_ms": duration_ms}
+
+
+def run_structlog_lint() -> dict[str, Any]:
+    """AST-walk all .py files under /workspace/src/ for structlog anti-patterns.
+
+    Detects:
+    1. log.*(positional_string, event=...) — passes event twice → TypeError at runtime.
+    2. log.*(format_string_with_percent) — structlog does not interpolate; %d stays literal.
+
+    Returns a diagnostic with file:line and the correct form so the LLM can fix it.
+    """
+    import ast
+
+    _LOG_METHODS = {"debug", "info", "warning", "error", "critical", "exception"}
+
+    t0 = time.monotonic()
+    violations: list[str] = []
+
+    src_dir = WORKSPACE / "src"
+    if not src_dir.exists():
+        return {"passed": True, "duration_ms": 0}
+
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            src = path.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(src, filename=str(path))
+        except (SyntaxError, OSError):
+            continue
+
+        rel = path.relative_to(WORKSPACE)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # Match log.info(...), log.error(...), etc.
+            if not (isinstance(func, ast.Attribute) and func.attr in _LOG_METHODS):
+                continue
+            kwarg_names = {kw.keyword for kw in node.keywords if isinstance(kw, ast.keyword)}
+            pos_args = node.args
+
+            # Anti-pattern 1: first positional arg is a string AND event= is also a kwarg
+            if (
+                pos_args
+                and isinstance(pos_args[0], ast.Constant)
+                and isinstance(pos_args[0].value, str)
+                and "event" in kwarg_names
+            ):
+                violations.append(
+                    f"{rel}:{node.lineno}: structlog anti-pattern: "
+                    f"log.{func.attr}(\"...\", event=...) passes 'event' twice → TypeError. "
+                    f"Use log.{func.attr}(\"event_name\", other_key=value) instead."
+                )
+
+            # Anti-pattern 2: first positional arg is a string containing % formatting
+            if (
+                pos_args
+                and isinstance(pos_args[0], ast.Constant)
+                and isinstance(pos_args[0].value, str)
+                and any(fmt in pos_args[0].value for fmt in ("%s", "%d", "%r"))
+            ):
+                violations.append(
+                    f"{rel}:{node.lineno}: structlog anti-pattern: "
+                    f"log.{func.attr}(\"{pos_args[0].value[:30]}...\") uses printf formatting "
+                    f"which structlog does not interpolate. Use keyword args instead."
+                )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if violations:
+        summary = "; ".join(violations[:3])
+        if len(violations) > 3:
+            summary += f" (and {len(violations) - 3} more)"
+        return {"passed": False, "duration_ms": duration_ms, "error": summary}
+    return {"passed": True, "duration_ms": duration_ms}
+
+
+# ---------------------------------------------------------------------------
 # Stage 3: Test
 # ---------------------------------------------------------------------------
 
@@ -1098,6 +1208,50 @@ def run_pipeline() -> None:
                 "failures": [],
                 "stdout_tail": build_result.get("stdout_tail", ""),
                 "stderr_tail": build_result.get("stderr_tail", ""),
+            },
+        )
+        sys.exit(1)
+
+    # -----------------------------------------------------------------------
+    # Pre-test: Syntax check (catches Python 3.14 SyntaxErrors before pytest)
+    # -----------------------------------------------------------------------
+    log.info("pre_test_check", check="syntax")
+    syntax_result = run_syntax_check()
+    if not syntax_result["passed"]:
+        _write_report(
+            generation=generation,
+            failure_stage="build",
+            checks=checks,
+            fitness=compute_fitness(checks, manifest, stages_completed),
+            diagnostics={
+                "stage": "build",
+                "summary": f"syntax error in generated code: {syntax_result.get('error', '')}",
+                "exit_code": None,
+                "failures": [],
+                "stdout_tail": "",
+                "stderr_tail": syntax_result.get("error", ""),
+            },
+        )
+        sys.exit(1)
+
+    # -----------------------------------------------------------------------
+    # Pre-test: structlog lint (catches TypeError-inducing anti-patterns before runtime)
+    # -----------------------------------------------------------------------
+    log.info("pre_test_check", check="structlog_lint")
+    lint_result = run_structlog_lint()
+    if not lint_result["passed"]:
+        _write_report(
+            generation=generation,
+            failure_stage="build",
+            checks=checks,
+            fitness=compute_fitness(checks, manifest, stages_completed),
+            diagnostics={
+                "stage": "build",
+                "summary": f"structlog anti-pattern detected: {lint_result.get('error', '')}",
+                "exit_code": None,
+                "failures": [],
+                "stdout_tail": "",
+                "stderr_tail": lint_result.get("error", ""),
             },
         )
         sys.exit(1)
