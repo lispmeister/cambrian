@@ -8,17 +8,19 @@ A self-reproducing code factory. Cambrian reads a specification, calls an LLM, a
 
 ## Status
 
-**M2 Stage 1 ready. Bayesian Optimization loop over spec mutations is operational. Infrastructure hardened by adversarial review.**
+**M2 Stage 1 ready. Bayesian Optimization loop is operational, crash-safe, and fully specced. 307 tests passing.**
 
 What's done:
 - Phase 0: Supervisor, Test Rig, Docker image, gen-0 validated end-to-end
 - M1: Gen-1 ran 44 minutes, 10 total generations, 5 promoted (gen-4, gen-6, gen-8, gen-9, gen-10), all at 100% test pass rate. 474,834 cumulative tokens.
-- Pre-M2 hardening: 16-bead code review (specs, Python, Docker). Path traversal fix, field naming unification, Docker non-root user, 305 tests across multiple test files, all passing.
+- Pre-M2 hardening: 16-bead code review (specs, Python, Docker). Path traversal fix, field naming unification, Docker non-root user, 307 tests across multiple test files, all passing.
 - Verification layers: Three-layer anti-cheating model specced and Layer 1 (FROZEN spec acceptance vectors) implemented. Dual-blind examiner and adversarial red-team specced for M2 Tiers 1–2.
 - M2 Stage 1: Bayesian Optimization loop operational. Grammar-constrained spec mutations, mini-campaign screening, 15-dimension fitness vector, campaign runner, spec diff tooling all implemented and running.
 - Baseline campaign: 8/10 viable (80%) on gens 39–48 with unmodified spec.
 - Phenotypic distiller: AST-based post-campaign analysis that diffs viable vs failed and top-ranked vs bottom-ranked gens, automatically proposes spec amendments from observed code patterns (the Baldwin Effect — phenotypic excellence feeding back into the genome).
-- Adversarial round-two hardening (2026-04-09): structlog lint gate AST bug fix (`kw.arg` not `kw.keyword`), expanded printf-format regex, baseline contract `KeyError` guard, `force=True` scope tightening, empty-contract `None` return. Spec exemplar propagation: enhanced system prompt (exemplars + DO NOT list) now lives in CAMBRIAN-SPEC-005 §3.5 so Gen-2+ inherits it (v0.15.0).
+- Adversarial round-two hardening (2026-04-09): structlog lint gate AST bug fix, expanded printf-format regex, baseline contract guards. Spec exemplar propagation: enhanced system prompt now lives in CAMBRIAN-SPEC-005 §3.5 so Gen-2+ inherits it (v0.15.0).
+- Security hardening (2026-04-09): `ANTHROPIC_API_KEY` stripped from Test Rig containers (zero LLM calls made there); `NetworkMode: none` added to all Test Rig and baseline containers. Documented in BOOTSTRAP-SPEC-002 §3.3 + §3.6.
+- Spec remediation R1+R2 (2026-04-09): 8 spec/code mismatches fixed; dead `screen_mutation()` removed; BO loop gains crash recovery (observations persisted to `bo-observations.jsonl`, reloaded on restart); generation auto-detection from `/versions`; `GET /versions?campaign-id=` filter; `best-spec-meta.json` output. Both specs bumped to v0.17.0 / v0.13.0.
 
 Next: Run full M2 campaigns (20 BO iterations) with distiller-informed mutations to determine whether spec mutations improve viability rate over the 80% baseline.
 
@@ -74,7 +76,7 @@ Three components (M2 note: Prime is a logical role; during campaigns the Supervi
 
 - **M1: Reproduce.** ✓ Prime reads a spec, generates a working codebase, passes the test rig. The generated Prime can do the same. Completed 2026-03-29: 5 viable offspring, 474k tokens.
 - **Pre-M2 Hardening.** ✓ 3-phase code review, 87 integration tests, anti-cheating verification layers specced. Completed 2026-03-30.
-- **M2: Self-modify.** 🔄 In progress. Prime mutates its own spec and tests whether the mutation produces fitter offspring. BO loop operational as of 2026-04-01. Three verification layers prevent cheating: FROZEN spec vectors (implemented), dual-blind examiner, adversarial red-team. Spec at v0.15.0 with enhanced exemplar propagation.
+- **M2: Self-modify.** 🔄 In progress. Prime mutates its own spec and tests whether the mutation produces fitter offspring. BO loop operational, crash-safe (observations persisted), and auto-detects generation numbers. Three verification layers prevent cheating: FROZEN spec vectors (implemented), dual-blind examiner, adversarial red-team. Specs at CAMBRIAN-SPEC-005 v0.17.0 / BOOTSTRAP-SPEC-002 v0.13.0.
 
 ## Tech Stack
 
@@ -122,27 +124,11 @@ cd cambrian
 source .env
 uv run python -m supervisor.supervisor
 
-# Choose next generation number from artifacts history
-# (uses cambrian-artifacts/generations.json as the source of truth)
-CAMBRIAN_START_GENERATION=$(python - <<'PY'
-import json
-from pathlib import Path
-path = Path("../cambrian-artifacts/generations.json")
-if not path.exists():
-    print(1)
-else:
-    data = json.loads(path.read_text())
-    if not data:
-        print(1)
-    else:
-        last_gen = max(d.get("generation", 0) for d in data)
-        print(last_gen + 1)
-PY
-)
-
 # Run M2 BO loop (terminal 2)
+# CAMBRIAN_START_GENERATION defaults to "auto" — the loop queries /versions
+# and picks up where the last run left off. Crash recovery is automatic:
+# bo-observations.jsonl in the artifacts root is reloaded on restart.
 source .env && \
-  CAMBRIAN_START_GENERATION=$CAMBRIAN_START_GENERATION \
   CAMBRIAN_BO_BUDGET=20 \
   CAMBRIAN_CAMPAIGN_LENGTH=5 \
   CAMBRIAN_MINI_CAMPAIGN_N=2 \
