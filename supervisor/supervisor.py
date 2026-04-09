@@ -8,9 +8,10 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 import aiodocker
 import structlog

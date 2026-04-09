@@ -91,7 +91,7 @@ class SpecDiff:
     """Structured diff between two spec versions with section-level attribution."""
 
     parent_hash: str  # sha256:<hex> of parent spec text
-    child_hash: str   # sha256:<hex> of child spec text
+    child_hash: str  # sha256:<hex> of child spec text
     sections_changed: list[SectionChange]
     sections_unchanged: list[str]
     total_lines_added: int
@@ -250,18 +250,14 @@ def attribute_fitness_delta(
     before_mean: dict[str, float] = summary_before.get("fitness_mean", {})
     after_mean: dict[str, float] = summary_after.get("fitness_mean", {})
     shared_keys = set(before_mean) & set(after_mean)
-    fitness_mean_deltas = {
-        k: round(after_mean[k] - before_mean[k], 4) for k in sorted(shared_keys)
-    }
+    fitness_mean_deltas = {k: round(after_mean[k] - before_mean[k], 4) for k in sorted(shared_keys)}
 
     changed_names = [sc.section_name for sc in spec_diff.sections_changed]
     frozen_changed = [sc.section_name for sc in spec_diff.sections_changed if sc.is_frozen]
 
     total_sections = len(spec_diff.sections_changed) + len(spec_diff.sections_unchanged)
     entanglement = (
-        round(len(spec_diff.sections_changed) / total_sections, 4)
-        if total_sections > 0
-        else 0.0
+        round(len(spec_diff.sections_changed) / total_sections, 4) if total_sections > 0 else 0.0
     )
 
     per_section = {

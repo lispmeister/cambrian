@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from supervisor import prime_runner
+from supervisor import prime_runner  # noqa: E402
 
 log = structlog.get_logger(component="gen0_campaign")
 

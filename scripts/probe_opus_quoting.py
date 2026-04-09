@@ -9,6 +9,7 @@ Usage:
 
 Runs the generation N times (default: 3) and reports pass/fail for each attempt.
 """
+
 from __future__ import annotations
 
 import ast
@@ -107,7 +108,7 @@ MODEL = "claude-opus-4-6"
 
 
 async def run_once(client: anthropic.AsyncAnthropic, run_index: int) -> dict:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Run {run_index + 1} — {MODEL}")
     print("=" * 60)
 
@@ -123,11 +124,16 @@ async def run_once(client: anthropic.AsyncAnthropic, run_index: int) -> dict:
             break
         except anthropic.APIStatusError as exc:
             if attempt < 2:
-                print(f"  API error (attempt {attempt+1}/3): {exc.message} — retrying")
+                print(f"  API error (attempt {attempt + 1}/3): {exc.message} — retrying")
                 await asyncio.sleep(5)
             else:
                 print(f"  API error: {exc.message} — giving up")
-                return {"run": run_index + 1, "passed": False, "error": f"API error: {exc.message}", "code": None}
+                return {
+                    "run": run_index + 1,
+                    "passed": False,
+                    "error": f"API error: {exc.message}",
+                    "code": None,
+                }
 
     text = next((b.text for b in message.content if b.type == "text"), "")
     input_tokens = message.usage.input_tokens
@@ -202,7 +208,7 @@ async def main(runs: int) -> None:
         result = await run_once(client, i)
         outcomes.append(result)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("SUMMARY")
     print("=" * 60)
     passed = sum(1 for r in outcomes if r["passed"])

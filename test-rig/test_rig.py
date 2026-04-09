@@ -316,7 +316,7 @@ def run_structlog_lint() -> dict[str, Any]:
         try:
             src = path.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(src, filename=str(path))
-        except (SyntaxError, OSError):
+        except SyntaxError, OSError:
             continue
 
         rel = path.relative_to(WORKSPACE)
@@ -340,7 +340,7 @@ def run_structlog_lint() -> dict[str, Any]:
                 violations.append(
                     f"{rel}:{node.lineno}: structlog anti-pattern: "
                     f"log.{func.attr}(\"...\", event=...) passes 'event' twice → TypeError. "
-                    f"Use log.{func.attr}(\"event_name\", other_key=value) instead."
+                    f'Use log.{func.attr}("event_name", other_key=value) instead.'
                 )
 
             # Anti-pattern 2: first positional arg is a string containing % formatting
@@ -352,7 +352,7 @@ def run_structlog_lint() -> dict[str, Any]:
             ):
                 violations.append(
                     f"{rel}:{node.lineno}: structlog anti-pattern: "
-                    f"log.{func.attr}(\"{pos_args[0].value[:30]}...\") uses printf formatting "
+                    f'log.{func.attr}("{pos_args[0].value[:30]}...") uses printf formatting '
                     f"which structlog does not interpolate. Use keyword args instead."
                 )
 

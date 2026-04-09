@@ -56,9 +56,9 @@ class BOObservation:
 
     spec_hash: str
     spec_text: str
-    features: list[float]          # per-section diff magnitude from base spec
-    mini_viability: float          # viability_rate from mini-campaign
-    full_viability: float | None   # viability_rate from full campaign (None if screened out)
+    features: list[float]  # per-section diff magnitude from base spec
+    mini_viability: float  # viability_rate from mini-campaign
+    full_viability: float | None  # viability_rate from full campaign (None if screened out)
     mini_summary: dict[str, Any]
     full_summary: dict[str, Any] | None
     target_section: str | None
@@ -244,7 +244,9 @@ class SpecBOLoop:
             self._spec_diffs.append(diff_spec(self.base_spec_text, mutated))
 
             obs = await self._evaluate_spec(
-                mutated, features=features, target_section=target_section,
+                mutated,
+                features=features,
+                target_section=target_section,
                 campaign_index=campaign_index,
             )
             if obs:
@@ -374,7 +376,7 @@ class SpecBOLoop:
         """Assemble the BOResult from all observations."""
         best = max(
             self.observations,
-            key=lambda o: (o.full_viability or o.mini_viability),
+            key=lambda o: o.full_viability or o.mini_viability,
             default=None,
         )
         if best is None:

@@ -33,10 +33,10 @@ class SectionIndependenceScore:
     """Modularity metric for a single section."""
 
     section_name: str
-    mutations_touching: int       # times this section appeared in a SpecDiff
-    mutations_touching_alone: int # times it was the ONLY section changed
-    independence_score: float     # mutations_alone / mutations_touching (0–1)
-    cross_refs_from: int          # ## SectionName references found in this section's text
+    mutations_touching: int  # times this section appeared in a SpecDiff
+    mutations_touching_alone: int  # times it was the ONLY section changed
+    independence_score: float  # mutations_alone / mutations_touching (0–1)
+    cross_refs_from: int  # ## SectionName references found in this section's text
 
 
 @dataclass
@@ -46,8 +46,8 @@ class EntanglementReport:
     mutation_count: int
     mean_sections_per_mutation: float
     max_sections_per_mutation: int
-    entanglement_trend: float      # linear slope of entanglement_score over mutations
-    is_entangling: bool            # trend > ENTANGLEMENT_ALERT_THRESHOLD
+    entanglement_trend: float  # linear slope of entanglement_score over mutations
+    is_entangling: bool  # trend > ENTANGLEMENT_ALERT_THRESHOLD
     section_scores: list[SectionIndependenceScore]
     cross_ref_matrix: dict[str, list[str]]  # {section: [sections it references]}
 
@@ -149,9 +149,7 @@ def entanglement_alert(report: EntanglementReport) -> str | None:
     """Return a human-readable alert string if entanglement is increasing, else None."""
     if not report.is_entangling:
         return None
-    most_coupled = sorted(
-        report.section_scores, key=lambda s: s.independence_score
-    )[:3]
+    most_coupled = sorted(report.section_scores, key=lambda s: s.independence_score)[:3]
     coupled_names = ", ".join(s.section_name for s in most_coupled if s.mutations_touching > 0)
     return (
         f"Entanglement rising: trend={report.entanglement_trend:+.4f}/mutation "

@@ -178,7 +178,7 @@ def _extract_contracts(spec_text: str) -> list[dict[str, Any]] | None:
         return None
     try:
         data = json.loads(m.group(1).strip())
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
     return data if isinstance(data, list) else None
 

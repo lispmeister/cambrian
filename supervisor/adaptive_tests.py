@@ -90,8 +90,7 @@ def get_active_tests(
     """
     all_tests = load_tests(artifacts_root)
     active = [
-        t for t in all_tests
-        if campaign_index < t["created_at_campaign"] + t["expires_after"]
+        t for t in all_tests if campaign_index < t["created_at_campaign"] + t["expires_after"]
     ]
     # Newest first, then cap
     active.sort(key=lambda t: t["created_at_campaign"], reverse=True)
@@ -105,8 +104,7 @@ def expire_old_tests(
     """Remove expired tests from storage. Returns count removed."""
     all_tests = load_tests(artifacts_root)
     active = [
-        t for t in all_tests
-        if campaign_index < t["created_at_campaign"] + t["expires_after"]
+        t for t in all_tests if campaign_index < t["created_at_campaign"] + t["expires_after"]
     ]
     removed = len(all_tests) - len(active)
     if removed > 0:
@@ -313,5 +311,3 @@ def _extract_test_cases(response_text: str) -> list[str]:
         if stripped.startswith("def test_"):
             cases.append(stripped)
     return cases
-
-
