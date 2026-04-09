@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.10.0
+version: 0.11.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -1792,7 +1792,7 @@ These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2
 
 ```yaml
 spec-version: "002"
-version: "0.10.0"
+version: "0.11.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
