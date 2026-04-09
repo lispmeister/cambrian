@@ -948,6 +948,10 @@ def run_baseline_check(health_url: str, generation: int) -> dict[str, Any] | Non
         if not result["passed"]:
             all_passed = False
 
+    if not contract_results:
+        # If every contract was malformed, emit no baseline signal.
+        return None
+
     return {
         "baseline-generation": baseline_generation,
         "passed": all_passed,

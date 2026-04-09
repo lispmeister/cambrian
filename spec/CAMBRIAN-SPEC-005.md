@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.17.0
+version: 0.18.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -365,6 +365,8 @@ assert parse_files(response) == {"a.py": "line1\n"}
 ```
 
 ### Fresh generation prompt
+
+This System message block is the canonical source for runtime generation prompts. `supervisor/prime_runner.py` extracts this fenced block directly from the spec and sends it as the LLM system prompt.
 
 **System message:**
 
@@ -927,9 +929,9 @@ Maximum archive capacity: 5 × 4 × 4 × 3 = 240 cells. In practice, the archive
 
 **Stage 1 implementation note (M2 Stage 1):** MAP-Elites requires 200+ evaluations to populate meaningfully. Stage 1 has budget for ~20-30 campaigns. For Stage 1, the archive is replaced by a **single-objective Bayesian Optimization loop** (Gaussian Process + Expected Improvement via scikit-optimize) that maximizes `viability_rate`. The feature space is per-section line-delta from the base spec (one Real dimension per evolvable section). MAP-Elites activates in Stage 2+ when the evaluation budget supports it. Implemented in `supervisor/bo_loop.py`.
 
-**Stage 1 persistence:** Each evaluated spec variant is appended to `{CAMBRIAN_ARTIFACTS_ROOT}/bo-observations.jsonl` (one JSON object per line). Format: `{spec_hash, spec_text, campaign_summary, point, fitness, timestamp}`. The BO loop loads this file on startup to resume after a crash — replaying observations into the optimizer and picking up the generation counter from the last recorded entry. `spec-archive.json` (MAP-Elites) is not written in Stage 1.
+**Stage 1 persistence:** Each evaluated spec variant is appended to `{CAMBRIAN_ARTIFACTS_ROOT}/bo-observations.jsonl` (one JSON object per line). Format: `{spec_hash, spec_text, features, mini_viability, full_viability, mini_summary, full_summary, target_section, timestamp}`. The BO loop loads this file on startup to resume after a crash — replaying observations into the optimizer and picking up the generation counter from the persisted observation stream. When resumed from persisted observations, the BO loop MUST skip re-evaluating the base spec to avoid duplicate observations.
 
-**Stage 1 output:** On completion, the best spec variant is written to `best-spec.md` alongside `best-spec-meta.json` with `{spec_hash, viability_rate, iterations, timestamp}` in the working directory. Generation numbers are globally monotonic across M1 and M2: the BO loop MUST auto-detect the current highest generation from the Supervisor before starting (to avoid 409 conflicts with existing M1 records).
+**Stage 1 output:** On completion, the best spec variant is written to `best-spec.md` alongside `best-spec-meta.json` with `{spec_hash, viability_rate, iterations, budget_used, timestamp}` in the working directory. Generation numbers are globally monotonic across M1 and M2: the BO loop MUST auto-detect the current highest generation from the Supervisor before starting (to avoid 409 conflicts with existing M1 records).
 
 ### Meta-Monitor
 
@@ -970,7 +972,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.17.0"
+version: "0.18.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"

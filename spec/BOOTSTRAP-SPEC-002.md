@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.13.0
+version: 0.14.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -1175,6 +1175,8 @@ The Test Rig, after completing its normal health check (spec vectors + manifest 
 
 After a generation is promoted, the Supervisor fires a background task that runs the **previous** baseline artifact through the current Test Rig. This answers: "does our test harness still accept the last organism we promoted?"
 
+The reverse-run MUST execute against an isolated working copy of the baseline artifact (or a read-only mount of the original) so the historical promoted artifact cannot be mutated by the reverse-run container.
+
 The result is stored in the promoted generation's record under `baseline-reverse-run`:
 
 ```json
@@ -1344,6 +1346,8 @@ config = {
             "/tmp/cambrian-output-XXXXXX:/output:rw",  # randomized temp dir
         ],
         "NetworkMode": "none",  # see §3.6
+        "SecurityOpt": ["no-new-privileges:true"],
+        "CapDrop": ["ALL"],
     },
 }
 container = await client.containers.create_or_replace(name="lab-gen-N", config=config)
@@ -1352,6 +1356,13 @@ container = await client.containers.create_or_replace(name="lab-gen-N", config=c
 ### 3.6 Network Isolation
 
 Test Rig containers MUST be created with `"NetworkMode": "none"` in `HostConfig`. This disables all external network access while preserving loopback — the health stage calls `localhost:8401` inside the container and is unaffected.
+
+Test Rig containers MUST also set:
+
+- `"SecurityOpt": ["no-new-privileges:true"]`
+- `"CapDrop": ["ALL"]`
+
+These settings prevent privilege escalation and remove Linux capabilities not needed by the verification pipeline.
 
 Combined with credential withholding (§3.3), this provides defense-in-depth: even if organism code attempts to exfiltrate data during evaluation, it has no credentials to send and no network path to send them on.
 
@@ -1886,7 +1897,7 @@ These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2
 
 ```yaml
 spec-version: "002"
-version: "0.13.0"
+version: "0.14.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"

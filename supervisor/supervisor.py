@@ -388,8 +388,14 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
 
     container_id = f"cambrian-reverse-{current_generation}"
     output_dir = Path(tempfile.mkdtemp(prefix="cambrian-reverse-output-"))
+    workspace_copy = Path(tempfile.mkdtemp(prefix="cambrian-reverse-workspace-"))
     docker = aiodocker.Docker()
     try:
+        # Copy baseline artifact into an isolated workspace so reverse-run cannot
+        # mutate the historical promoted artifact.
+        shutil.rmtree(workspace_copy, ignore_errors=True)
+        shutil.copytree(baseline_artifact_path, workspace_copy)
+
         # NOTE: ANTHROPIC_API_KEY is intentionally NOT passed. The reverse-run
         # container is a Test Rig container — it makes no LLM calls.
         config: dict[str, Any] = {
@@ -400,10 +406,12 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
             ],
             "HostConfig": {
                 "Binds": [
-                    f"{baseline_artifact_path}:/workspace:rw",
+                    f"{workspace_copy}:/workspace:rw",
                     f"{output_dir.resolve()}:/output:rw",
                 ],
                 "NetworkMode": "none",
+                "SecurityOpt": ["no-new-privileges:true"],
+                "CapDrop": ["ALL"],
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)
@@ -465,6 +473,7 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
     finally:
         await docker.close()
         shutil.rmtree(output_dir, ignore_errors=True)
+        shutil.rmtree(workspace_copy, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +570,8 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
                 # (health checks hit localhost:8401 inside the container).
                 # Prevents organism code from exfiltrating data during build/test/start.
                 "NetworkMode": "none",
+                "SecurityOpt": ["no-new-privileges:true"],
+                "CapDrop": ["ALL"],
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)

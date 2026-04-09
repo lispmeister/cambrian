@@ -240,15 +240,21 @@ class SpecBOLoop:
             resuming=len(self.observations) > 0,
         )
 
-        # Evaluate the base spec first (establishes the baseline)
-        base_obs = await self._evaluate_spec(
-            self.base_spec_text,
-            features=extract_features(self.base_spec_text, self.section_names, self.base_spec_text),
-            target_section=None,
-        )
-        if base_obs:
-            self.observations.append(base_obs)
-            self._record_observation(base_obs)
+        # Evaluate the base spec first (establishes the baseline) only on fresh
+        # runs. On resumed runs this observation is already persisted.
+        if not self.observations:
+            base_obs = await self._evaluate_spec(
+                self.base_spec_text,
+                features=extract_features(
+                    self.base_spec_text, self.section_names, self.base_spec_text
+                ),
+                target_section=None,
+            )
+            if base_obs:
+                self.observations.append(base_obs)
+                self._record_observation(base_obs)
+        else:
+            log.info("bo_loop_resume_skip_base_eval", observations=len(self.observations))
 
         for iteration in range(1, self.budget + 1):
             campaign_index = iteration - 1

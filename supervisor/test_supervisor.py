@@ -157,6 +157,42 @@ class TestGenerations:
         assert path.stat().st_mtime == mtime_before
         assert generations.get(1) is not None  # existing record untouched
 
+    def test_force_append_only_adds_new_field(self, artifacts_root: Path) -> None:
+        from supervisor import generations
+
+        generations.append({"generation": 1, "outcome": "promoted"})
+        generations.update(
+            1,
+            {"baseline-reverse-run": {"status": "viable"}},
+            force=True,
+            append_only=frozenset({"baseline-reverse-run"}),
+        )
+        rec = generations.get(1)
+        assert rec is not None
+        assert rec.get("baseline-reverse-run") == {"status": "viable"}
+
+    def test_force_append_only_does_not_overwrite_existing_field(
+        self, artifacts_root: Path
+    ) -> None:
+        from supervisor import generations
+
+        generations.append(
+            {
+                "generation": 1,
+                "outcome": "promoted",
+                "baseline-reverse-run": {"status": "old"},
+            }
+        )
+        generations.update(
+            1,
+            {"baseline-reverse-run": {"status": "new"}},
+            force=True,
+            append_only=frozenset({"baseline-reverse-run"}),
+        )
+        rec = generations.get(1)
+        assert rec is not None
+        assert rec.get("baseline-reverse-run") == {"status": "old"}
+
 
 # ---------------------------------------------------------------------------
 # supervisor.py HTTP endpoint tests
@@ -742,6 +778,41 @@ async def test_run_test_rig_no_api_key_in_env(artifacts_root: Path) -> None:
     assert "ANTHROPIC_API_KEY" not in env_keys, "API key must not be in Test Rig container env"
     host_config = captured_config.get("HostConfig", {})
     assert host_config.get("NetworkMode") == "none", "Test Rig must have NetworkMode: none"
+    assert host_config.get("SecurityOpt") == ["no-new-privileges:true"]
+    assert host_config.get("CapDrop") == ["ALL"]
+
+
+@pytest.mark.asyncio
+async def test_run_baseline_reverse_run_uses_workspace_copy(artifacts_root: Path) -> None:
+    """Reverse-run must not mount the historical baseline artifact path directly."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    baseline_artifact = artifacts_root / "gen-1"
+    baseline_artifact.mkdir(parents=True)
+    (baseline_artifact / "manifest.json").write_text("{}")
+    generations.append({"generation": 2, "outcome": "promoted"})
+
+    captured_config: dict[str, Any] = {}
+    mock_docker_cls, mock_docker = _make_mock_docker()
+
+    async def capture_create(name: str, config: dict[str, Any]) -> Any:
+        captured_config.update(config)
+        return mock_docker.containers.create_or_replace.return_value
+
+    mock_docker.containers.create_or_replace = capture_create
+    battery = {"generation": 1, "artifact-ref": "gen-1"}
+
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_baseline_reverse_run(2, battery)
+
+    host_config = captured_config.get("HostConfig", {})
+    binds = host_config.get("Binds", [])
+    assert not any(str(baseline_artifact) in b for b in binds)
+    assert any(":/workspace:rw" in b for b in binds)
+    assert host_config.get("NetworkMode") == "none"
+    assert host_config.get("SecurityOpt") == ["no-new-privileges:true"]
+    assert host_config.get("CapDrop") == ["ALL"]
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1541,21 @@ class TestBOLoop:
         assert loop2.observations[0].spec_hash == "sha256:abc"
         assert loop2.observations[0].full_viability == 0.8
 
+        lines = (artifacts_root / "bo-observations.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        payload = json.loads(lines[0])
+        assert set(payload.keys()) == {
+            "spec_hash",
+            "spec_text",
+            "features",
+            "mini_viability",
+            "full_viability",
+            "mini_summary",
+            "full_summary",
+            "target_section",
+            "timestamp",
+        }
+
     def test_bo_loop_reload_sets_generation_counter(self, tmp_path: Path) -> None:
         """Generation counter is advanced past reloaded observations on restart."""
         from supervisor.bo_loop import BOObservation, SpecBOLoop
@@ -1511,6 +1597,47 @@ class TestBOLoop:
         loop = SpecBOLoop(spec_path, budget=3, artifacts_root=artifacts_root)
         assert loop.observations == []
         assert loop._generation_counter == 1
+
+    @pytest.mark.asyncio
+    async def test_bo_loop_resume_skips_base_spec_re_eval(self, tmp_path: Path) -> None:
+        """Resumed BO runs must not append a duplicate base-spec observation."""
+        from supervisor.bo_loop import BOObservation, BOResult, SpecBOLoop
+
+        spec = _make_valid_spec()
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text(spec)
+        artifacts_root = tmp_path / "artifacts"
+        artifacts_root.mkdir(exist_ok=True)
+
+        loop1 = SpecBOLoop(spec_path, budget=1, artifacts_root=artifacts_root)
+        obs = BOObservation(
+            spec_hash="sha256:abc",
+            spec_text=spec,
+            features=[0.0] * len(loop1.section_names),
+            mini_viability=0.6,
+            full_viability=0.8,
+            mini_summary={},
+            full_summary={},
+            target_section=None,
+        )
+        loop1._record_observation(obs)
+
+        loop2 = SpecBOLoop(spec_path, budget=0, artifacts_root=artifacts_root)
+        eval_mock = AsyncMock(return_value=None)
+        loop2._evaluate_spec = eval_mock  # type: ignore[method-assign]
+        loop2._make_result = MagicMock(
+            return_value=BOResult(
+                best_spec_hash="",
+                best_viability=0.0,
+                best_spec_text=spec,
+                observations=loop2.observations,
+                iterations=len(loop2.observations),
+                budget_used=0,
+            )
+        )
+
+        await loop2.run()
+        eval_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

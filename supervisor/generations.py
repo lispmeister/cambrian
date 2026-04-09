@@ -103,9 +103,11 @@ def update(
     """
     updated = False
     rejected = False
+    applied_fields: list[str] = []
+    skipped_existing: list[str] = []
 
     def _update(records: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-        nonlocal updated, rejected
+        nonlocal updated, rejected, applied_fields, skipped_existing
         for record in records:
             if record.get("generation") == generation:
                 current_outcome = record.get("outcome")
@@ -118,7 +120,16 @@ def update(
                     if append_only is not None
                     else fields
                 )
-                record.update(effective_fields)
+                if append_only is not None:
+                    for key, value in effective_fields.items():
+                        if key in record:
+                            skipped_existing.append(key)
+                            continue
+                        record[key] = value
+                        applied_fields.append(key)
+                else:
+                    record.update(effective_fields)
+                    applied_fields.extend(effective_fields.keys())
                 # Only stamp completed when reaching a terminal state
                 new_outcome = record.get("outcome")
                 if new_outcome in _TERMINAL_OUTCOMES and not record.get("completed"):
@@ -138,7 +149,12 @@ def update(
     elif not updated:
         log.warning("generation_record_not_found", generation=generation)
     else:
-        log.info("generation_record_updated", generation=generation, fields=list(fields.keys()))
+        log.info(
+            "generation_record_updated",
+            generation=generation,
+            fields=applied_fields,
+            skipped_existing_fields=skipped_existing,
+        )
 
 
 def get(generation: int) -> dict[str, Any] | None:

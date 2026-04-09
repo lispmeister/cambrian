@@ -17,6 +17,14 @@ Examples from your existing entries:
 
 <!-- Your detailed work, tables, code snippets, results, etc. go here -->
 
+## Hypothesis vs Measured Impact
+
+| Change | Hypothesis (before run) | Measurement (after run) | Evidence / Notes |
+|--------|--------------------------|--------------------------|------------------|
+| [e.g. structlog lint gate] | [+5-10 pp viability] | [8/10 viable; +12 pp vs last 10-gen baseline] | [link to summary/report path] |
+
+Use concrete campaign data where possible (N, viability %, test count, runtime). If measurement is deferred, say exactly what run is needed and why.
+
 ---
 
 **Signed:** lispmeister + AI assistant  

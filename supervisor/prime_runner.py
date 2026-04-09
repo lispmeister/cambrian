@@ -28,7 +28,7 @@ _ESCALATION_MODEL = os.environ.get("CAMBRIAN_ESCALATION_MODEL", "claude-opus-4-6
 _PER_CALL_MAX_TOKENS = 32768  # Fixed per-call limit; CAMBRIAN_TOKEN_BUDGET is cumulative (deferred)
 _MAX_PARSE_RETRIES = int(os.environ.get("CAMBRIAN_MAX_PARSE_RETRIES", "2"))
 
-SYSTEM_PROMPT = """\
+DEFAULT_SYSTEM_PROMPT = """\
 You are a code generator. You produce complete, working Python codebases from specifications.
 
 Rules:
@@ -98,6 +98,43 @@ DO NOT:
   NOT snake_case. Python variables use snake_case internally.
 - Use "python src/prime.py" in entry.start — use "python -m src.prime" (module form)
 """
+
+
+def extract_system_prompt(spec_text: str) -> str | None:
+    """Extract the canonical system prompt block from CAMBRIAN-SPEC-005 §3.5.
+
+    Returns None when the expected fenced block is missing.
+    """
+    marker = "### Fresh generation prompt"
+    start = spec_text.find(marker)
+    if start == -1:
+        return None
+
+    section = spec_text[start:]
+    system_label = "**System message:**"
+    label_idx = section.find(system_label)
+    if label_idx == -1:
+        return None
+
+    after_label = section[label_idx + len(system_label) :]
+    fence_start = after_label.find("```")
+    if fence_start == -1:
+        return None
+    payload = after_label[fence_start + 3 :]
+    fence_end = payload.find("```")
+    if fence_end == -1:
+        return None
+
+    prompt = payload[:fence_end].strip()
+    return prompt or None
+
+
+def resolve_system_prompt(spec_text: str) -> str:
+    """Prefer the prompt embedded in the spec; fall back to local default."""
+    extracted = extract_system_prompt(spec_text)
+    if extracted:
+        return extracted
+    return DEFAULT_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +377,7 @@ async def generate_artifact(
     spec_hash = _compute_spec_hash(spec_text)
     client = anthropic.AsyncAnthropic()
     token_usage: dict[str, int] = {"input": 0, "output": 0}
+    system_prompt = resolve_system_prompt(spec_text)
 
     for attempt in range(1, _MAX_PARSE_RETRIES + 1):
         call_model = _ESCALATION_MODEL if attempt > 1 else model
@@ -354,7 +392,7 @@ async def generate_artifact(
         async with client.messages.stream(
             model=call_model,
             max_tokens=_PER_CALL_MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             response = await stream.get_final_message()
@@ -385,7 +423,7 @@ async def generate_artifact(
                 async with client.messages.stream(
                     model=call_model,
                     max_tokens=_PER_CALL_MAX_TOKENS,
-                    system=SYSTEM_PROMPT,
+                    system=system_prompt,
                     messages=[{"role": "user", "content": repair_prompt}],
                 ) as repair_stream:
                     repair_response = await repair_stream.get_final_message()
