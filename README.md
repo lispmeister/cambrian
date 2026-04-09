@@ -66,6 +66,23 @@ Three components (M2 note: Prime is a logical role; during campaigns the Supervi
   └───────────────────────────────┘
 ```
 
+### Architecture Diagrams (M2 Stage 1, current)
+
+These diagrams supersede older M1-era mental models that assumed a long-running Prime service/container as the active orchestrator.
+
+High-level architecture:
+
+![Cambrian architecture (M2 Stage 1)](spec/diagrams/architecture-20260320.png)
+
+Generation sequence:
+
+![Cambrian generation sequence (M2 Stage 1)](spec/diagrams/generation-sequence-20260320.png)
+
+Editable sources:
+
+- [architecture-20260320.mmd](spec/diagrams/architecture-20260320.mmd) ([svg](spec/diagrams/architecture-20260320.svg))
+- [generation-sequence-20260320.mmd](spec/diagrams/generation-sequence-20260320.mmd) ([svg](spec/diagrams/generation-sequence-20260320.svg))
+
 ## Repos
 
 | Repo | Purpose |
@@ -166,6 +183,10 @@ How we do it: a Bayesian Optimization loop proposes spec mutations, runs short c
 
 - The lab journal (`lab-journal/`) is the project’s honest narrative: decisions, failures, fixes, and experimental outcomes are logged chronologically so history can’t be rewritten.
 - Experimental data is captured mechanically in `../cambrian-artifacts/generations.json`. Each generation attempt (success or failure) is recorded with its viability report. This file is the source of truth for run history and generation numbering.
+- M2 execution planning docs:
+  - `docs/M2-STAGE1-SUCCESS-CHECKLIST.md`
+  - `docs/templates/m2-stage1-results-template.md`
+  - `scripts/summarize_m2_results.py` (auto-generates campaign/aggregate tables from `generations.json`)
 
 See [CLAUDE.md](CLAUDE.md) for development conventions and issue tracking workflow.
 

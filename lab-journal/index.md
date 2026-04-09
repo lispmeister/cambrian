@@ -4,7 +4,7 @@ This is the central Table of Contents for the entire lab journal, following Howa
 It makes the notebook navigable years later and serves as the front-matter every good notebook requires.
 
 **Last updated:** 2026-04-09
-**Total entries:** 44 (plus this index)
+**Total entries:** 46 (plus this index)
 **How to maintain:** Add a new row every time you create a journal file. Keep the table sorted chronologically. New entries should include a "Hypothesis vs Measured Impact" section using `TEMPLATE.md`.
 
 | Date          | File                                      | Key Topics                                                                 | Milestone / Bead / Phase                  |
@@ -56,6 +56,8 @@ It makes the notebook navigable years later and serves as the front-matter every
 | 2026-04-09c  | [journal-2026-04-09c.md](journal-2026-04-09c.md) | Adversarial round-two review: fix kw.keyword→kw.arg crash, expand printf regex, module-form exemplar, baseline KeyError guard, force=True scoping, empty-contract false positive | cambrian-2i8l |
 | 2026-04-09d  | [journal-2026-04-09d.md](journal-2026-04-09d.md) | Spec remediation R1+R2: API key stripped from Test Rig, NetworkMode=none, 8 spec/code mismatches fixed, dead screen_mutation() removed, bo_loop persistence + crash recovery, /versions campaign-id filter; specs bumped to v0.17.0/v0.13.0 | cambrian-7gd0, cambrian-yoii, cambrian-m1dp, cambrian-dm7t, cambrian-9819 |
 | 2026-04-09e  | [journal-2026-04-09e.md](journal-2026-04-09e.md) | Follow-up hardening beads implemented: reverse-run workspace isolation, sandbox controls (no-new-privileges/cap drop), BO resume dedup, append-only semantics, prompt single-source extraction, new gate regression tests, spec bumps to v0.18.0/v0.14.0 | cambrian-0naj, cambrian-j1yb, cambrian-rs6h, cambrian-ls3g, cambrian-i6sd, cambrian-0jod, cambrian-wxmm, cambrian-h64w, cambrian-cwzq |
+| 2026-04-09f  | [journal-2026-04-09f.md](journal-2026-04-09f.md) | M2 success rubric operationalized: Stage 1 checklist, results template, and summarize_m2_results.py helper for baseline vs mutation reporting | N/A |
+| 2026-04-09g  | [journal-2026-04-09g.md](journal-2026-04-09g.md) | Architecture diagrams refreshed to current M2 Stage 1 flow; PNG/SVG assets regenerated with readability fixes; README updated to embed current diagrams and source links | N/A |
 
 ---
 

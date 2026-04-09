@@ -1,42 +1,57 @@
+%%{init: {'flowchart': {'htmlLabels': false}} }%%
 graph TB
     subgraph Host["Host Machine"]
         direction TB
-        Supervisor["<b>Supervisor</b> :8400<br/>────────────────<br/>Container lifecycle<br/>Generation history<br/>Spawn / Promote / Rollback<br/>Dashboard"]
 
-        subgraph PrimeContainer["Prime Container"]
-            direction TB
-            Prime["<b>Prime</b> :8401<br/>────────────────<br/>Code factory<br/>LLM generation<br/>Verify decisions<br/>/health /stats /chat"]
-            Spec["<b>Spec</b><br/>CAMBRIAN-SPEC-002.md"]
-            Source["<b>Source</b><br/>Git repository"]
-            Prime --- Spec
-            Prime --- Source
+        subgraph M2["M2 Orchestration (host-side)"]
+            RunM2["scripts/run_m2.py\nBO driver"]
+            BOLoop["bo_loop.py\ncandidate selection\nbo-observations.jsonl"]
+            Campaign["campaign.py\nrun_campaign()\npoll /versions?campaign-id="]
+            PrimeRunner["prime_runner.py\ngenerate artifact from\nCAMBRIAN-SPEC-005.md"]
+            RunM2 --> BOLoop --> Campaign --> PrimeRunner
         end
 
-        subgraph LabContainer["Lab Container (ephemeral)"]
+        Supervisor["Supervisor :8400\n/spawn /versions /promote /rollback\ngeneration ledger + lifecycle"]
+
+        subgraph LabContainer["Test Rig Container (ephemeral)"]
             direction TB
-            TestRig["<b>Test Rig</b><br/>────────────────<br/>build → test → start<br/>→ health-check → report<br/><i>No LLM. No agentic loop.</i>"]
-            Artifact["<b>Artifact</b><br/>Generated codebase<br/>+ manifest"]
-            TestRig --- Artifact
+            TestRig["test_rig.py\nmanifest -> build -> test\n-> start -> health -> report\nNo LLM. No API key."]
+        end
+
+        subgraph Artifacts["Artifacts Repo (sibling)"]
+            direction TB
+            GenStore["generations.json\nglobal generation history"]
+            CampaignDirs["campaigns/<campaign-id>/gen-N\nartifact dirs + manifest"]
+            GenStore --- CampaignDirs
         end
     end
 
-    LLM["<b>LLM API</b><br/>(Anthropic / other)"]
+    Spec["Genome Spec\nspec/CAMBRIAN-SPEC-005.md"]
+    LLM["LLM API\n(Anthropic / other)"]
 
-    Prime -->|"POST /spawn<br/>{spec-hash, generation, artifact-path}"| Supervisor
-    Supervisor -->|"Creates container,<br/>injects artifact"| LabContainer
-    TestRig -->|"Viability report<br/>(stdout JSON)"| Supervisor
-    Supervisor -->|"Report forwarded"| Prime
-    Prime -->|"POST /promote or /rollback"| Supervisor
-    Prime -->|"Spec + history → generate code"| LLM
-    LLM -->|"Complete codebase"| Prime
+    PrimeRunner -->|"reads"| Spec
+    PrimeRunner -->|"prompt + context"| LLM
+    LLM -->|"files"| PrimeRunner
+    PrimeRunner -->|"writes artifact"| CampaignDirs
+
+    Campaign -->|"POST /spawn {generation, artifact-path, spec-hash, campaign-id}"| Supervisor
+    Supervisor -->|"create lab-gen-N"| LabContainer
+    Supervisor -->|"bind /workspace + isolated /output"| LabContainer
+    LabContainer -->|"viability-report.json in /output"| Supervisor
+    Supervisor -->|"update tested record"| GenStore
+
+    Campaign -->|"GET /versions?campaign-id=..."| Supervisor
+    Campaign -->|"POST /promote or /rollback"| Supervisor
+    Supervisor -->|"terminal outcome"| GenStore
+
+    NoteSec["Container guards\nNetworkMode=none\nSecurityOpt=no-new-privileges\nCapDrop=ALL"]
+    Supervisor -. "enforces" .-> NoteSec
 
     style Host fill:#f8f9fa,stroke:#333,stroke-width:2px
-    style PrimeContainer fill:#e8f4fd,stroke:#2196F3,stroke-width:2px
-    style LabContainer fill:#fff3e0,stroke:#FF9800,stroke-width:2px,stroke-dasharray: 5 5
-    style Supervisor fill:#e8f5e9,stroke:#4CAF50,stroke-width:1px
-    style Prime fill:#e3f2fd,stroke:#2196F3,stroke-width:1px
-    style TestRig fill:#fff8e1,stroke:#FF9800,stroke-width:1px
-    style LLM fill:#f3e5f5,stroke:#9C27B0,stroke-width:1px
-    style Spec fill:#e3f2fd,stroke:#90CAF9,stroke-width:1px
-    style Source fill:#e3f2fd,stroke:#90CAF9,stroke-width:1px
-    style Artifact fill:#fff8e1,stroke:#FFB74D,stroke-width:1px
+    style M2 fill:#e8f4fd,stroke:#1e88e5,stroke-width:2px
+    style Supervisor fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style LabContainer fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,stroke-dasharray: 5 5
+    style Artifacts fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style LLM fill:#ede7f6,stroke:#5e35b1,stroke-width:1px
+    style Spec fill:#e3f2fd,stroke:#1565c0,stroke-width:1px
+    style NoteSec fill:#fffde7,stroke:#f9a825,stroke-width:1px

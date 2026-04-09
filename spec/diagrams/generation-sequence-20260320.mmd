@@ -1,61 +1,56 @@
 sequenceDiagram
-    actor User
-    participant Prime as Prime<br/>(Code Factory)
+    actor Operator
+    participant RunM2 as scripts/run_m2.py
+    participant BO as bo_loop.py
+    participant Campaign as campaign.py
+    participant PrimeRunner as prime_runner.py
     participant LLM as LLM API
-    participant Supervisor as Supervisor<br/>(Host)
-    participant Lab as Lab Container<br/>(Test Rig)
+    participant Supervisor as Supervisor :8400
+    participant Lab as Test Rig container
 
     rect rgb(234, 242, 248)
-        Note over User,Lab: Phase 1 — Read Spec
-        Note right of Prime: Load CAMBRIAN-SPEC-002.md<br/>from local filesystem.<br/>Load generation history<br/>and fitness log.
+        Note over RunM2,Supervisor: Stage 1 setup
+        RunM2->>BO: initialize with CAMBRIAN-SPEC-005.md
+        BO->>Supervisor: GET /versions
+        Supervisor-->>BO: current generations
+        Note right of BO: detect start generation and reload bo-observations.jsonl
     end
 
-    rect rgb(244, 236, 247)
-        Note over User,Lab: Phase 2 — Generate
-        Prime->>+LLM: Spec + generation history + fitness
-        Note right of LLM: Produce complete codebase<br/>from spec. All source files,<br/>build config, tests.
-        LLM-->>-Prime: Complete codebase (file set)
-        Note right of Prime: Write files to workspace/<br/>Run build step<br/>Create manifest.json<br/>(spec-hash, artifact-hash,<br/>model, token-usage, files)<br/>git commit to gen-N branch
-    end
+    loop BO iteration (budgeted)
+        rect rgb(244, 236, 247)
+            Note over BO,LLM: Generate candidate artifact(s)
+            BO->>Campaign: run_campaign(spec variant, n, start_generation)
+            Campaign->>PrimeRunner: generate_artifact(...)
+            PrimeRunner->>LLM: system prompt (from spec) + user prompt
+            LLM-->>PrimeRunner: complete file set
+            PrimeRunner-->>Campaign: artifact path + manifest metadata
+        end
 
-    rect rgb(234, 250, 241)
-        Note over User,Lab: Phase 3 — Verify
-        Prime->>+Supervisor: POST /spawn {spec-hash, generation, artifact-path}
-        Note right of Supervisor: 1. Create Lab container<br/>2. Mount artifact at /workspace<br/>3. Start container
-        Supervisor->>Lab: container run lab-gen-N<br/>--volume artifact:/workspace
-        activate Lab
-        Note right of Lab: Test rig executes:<br/>1. Build — compile/install<br/>2. Unit test — run suite<br/>3. Start — launch Prime,<br/>   wait for port bind (30s)<br/>4. Health — GET /health → 200<br/>   GET /stats → valid JSON
-        Note right of Lab: Write viability-report.json<br/>to /workspace/<br/>Exit 0 (viable) or 1 (non-viable)
-        deactivate Lab
-        Note right of Supervisor: Read /workspace/viability-report.json<br/>Destroy Lab container<br/>Record in generation history
-        Supervisor-->>-Prime: Viability report
-    end
-
-    alt Viable
         rect rgb(234, 250, 241)
-            Note over User,Lab: Phase 4A — Promote
-            Prime->>+Supervisor: POST /promote {generation: N}
-            Note right of Supervisor: git tag gen-N<br/>Record outcome: promoted<br/>Append fitness log
-            Supervisor-->>-Prime: 200 {ok, generation}
+            Note over Campaign,Lab: Mechanical verification
+            Campaign->>Supervisor: POST /spawn {generation, artifact-path, spec-hash, campaign-id}
+            Supervisor->>Lab: create lab-gen-N with /workspace + isolated /output
+            Note right of Lab: NetworkMode=none, no ANTHROPIC_API_KEY, no-new-privileges + CapDrop=ALL
+            Lab->>Lab: manifest -> build -> test -> start -> health
+            Lab-->>Supervisor: /output/viability-report.json
+            Supervisor-->>Campaign: generation record becomes tested
+            Campaign->>Supervisor: GET /versions?campaign-id=... (poll)
         end
-    else Non-viable
-        rect rgb(253, 237, 236)
-            Note over User,Lab: Phase 4B — Rollback
-            Prime->>+Supervisor: POST /rollback {generation: N}
-            Note right of Supervisor: Discard gen-N branch<br/>Record outcome: failed
-            Supervisor-->>-Prime: 200 {ok, generation}
+
+        alt generation viable
+            Campaign->>Supervisor: POST /promote {generation}
+            Note right of Supervisor: mark promoted and trigger baseline reverse-run in background
+        else generation non-viable
+            Campaign->>Supervisor: POST /rollback {generation}
+            Note right of Supervisor: mark failed
         end
+
+        Campaign-->>BO: campaign summary (viability_rate + fitness means)
+        BO->>BO: persist observation to bo-observations.jsonl
     end
 
     rect rgb(254, 249, 231)
-        Note over User,Lab: Reproductive Test (M1 acceptance)
-        Note right of Prime: If promoted generation is Prime:<br/>  Start promoted Prime in new container<br/>  Ask it to generate from the same spec<br/>  Verify THAT offspring is also viable<br/><br/>If offspring can reproduce → M1 complete
-    end
-
-    rect rgb(240, 240, 240)
-        Note over User,Lab: Bootstrap Path (Stage 0 → Stage 2)
-        Note over User,Prime: Stage 0: Human writes bootstrap + test rig + supervisor
-        Note over Prime,LLM: Stage 1: Bootstrap reads spec → LLM → first Prime
-        Note over Prime,Lab: Stage 2: Prime reads spec → LLM → second Prime
-        Note over User,Lab: Accept: Stage 2 output passes same test rig as Stage 1
+        Note over RunM2,BO: Completion
+        BO-->>RunM2: best spec + metrics
+        RunM2->>RunM2: write best-spec.md + best-spec-meta.json
     end
