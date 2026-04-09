@@ -386,10 +386,11 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
     output_dir = Path(tempfile.mkdtemp(prefix="cambrian-reverse-output-"))
     docker = aiodocker.Docker()
     try:
+        # NOTE: ANTHROPIC_API_KEY is intentionally NOT passed. The reverse-run
+        # container is a Test Rig container — it makes no LLM calls.
         config: dict[str, Any] = {
             "Image": DOCKER_IMAGE,
             "Env": [
-                f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
                 f"CAMBRIAN_SUPERVISOR_URL={SUPERVISOR_URL}",
                 f"CAMBRIAN_GENERATION={baseline_gen}",
             ],
@@ -398,6 +399,7 @@ async def run_baseline_reverse_run(current_generation: int, battery: dict[str, A
                     f"{baseline_artifact_path}:/workspace:rw",
                     f"{output_dir.resolve()}:/output:rw",
                 ],
+                "NetworkMode": "none",
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)
@@ -497,7 +499,6 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
     Sets outcome to "tested" — Prime is responsible for calling /promote or /rollback
     to set the final terminal outcome.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     docker = aiodocker.Docker()
     container: Any = None
     # Isolated output directory for the viability report. Separate from the artifact
@@ -506,6 +507,9 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
     try:
         # Build env list: required vars always set; optional vars threaded through
         # from the supervisor's own environment only if explicitly set there.
+        # NOTE: ANTHROPIC_API_KEY is intentionally NOT passed here. The Test Rig
+        # makes no LLM calls. Withholding the key prevents organism code (which
+        # runs during build/test/start stages) from reading and exfiltrating it.
         _optional_vars = [
             "CAMBRIAN_MODEL",
             "CAMBRIAN_ESCALATION_MODEL",
@@ -516,7 +520,6 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             "CAMBRIAN_SPEC_PATH",
         ]
         env_list = [
-            f"ANTHROPIC_API_KEY={api_key}",
             f"CAMBRIAN_SUPERVISOR_URL={SUPERVISOR_URL}",
             f"CAMBRIAN_GENERATION={generation}",
         ]
@@ -550,6 +553,10 @@ async def run_test_rig(generation: int, artifact_path: Path, container_id: str) 
             "Env": env_list,
             "HostConfig": {
                 "Binds": binds,
+                # No egress network access — the Test Rig only needs loopback
+                # (health checks hit localhost:8401 inside the container).
+                # Prevents organism code from exfiltrating data during build/test/start.
+                "NetworkMode": "none",
             },
         }
         container = await docker.containers.create_or_replace(name=container_id, config=config)

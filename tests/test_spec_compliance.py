@@ -167,6 +167,8 @@ class TestFieldNamingConvention:
         "failure_distribution",
         "stages_completed_distribution",
         "generation_count",
+        # M2 mode gate
+        "CAMBRIAN_MODE",
         # M2 campaign / mutation env vars
         "CAMBRIAN_CAMPAIGN_LENGTH",
         "CAMBRIAN_MINI_CAMPAIGN_N",

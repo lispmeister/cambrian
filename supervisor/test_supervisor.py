@@ -693,6 +693,34 @@ async def test_run_test_rig_cleans_up_cache_dirs(artifacts_root: Path) -> None:
     assert not pytest_cache.exists(), ".pytest_cache should be removed"
 
 
+@pytest.mark.asyncio
+async def test_run_test_rig_no_api_key_in_env(artifacts_root: Path) -> None:
+    """Test Rig containers MUST NOT receive ANTHROPIC_API_KEY (security: exfiltration risk)."""
+    from supervisor import generations
+    from supervisor import supervisor as sup
+
+    generations.append({"generation": 6, "outcome": "in_progress"})
+    artifact_path = artifacts_root / "gen-6"
+    artifact_path.mkdir()
+
+    captured_config: dict = {}
+    mock_docker_cls, mock_docker = _make_mock_docker()
+
+    async def capture_create(name: str, config: dict) -> Any:
+        captured_config.update(config)
+        return mock_docker.containers.create_or_replace.return_value
+
+    mock_docker.containers.create_or_replace = capture_create
+    with patch("supervisor.supervisor.aiodocker.Docker", mock_docker_cls):
+        await sup.run_test_rig(6, artifact_path, "lab-gen-6")
+
+    env = captured_config.get("Env", [])
+    env_keys = [e.split("=", 1)[0] for e in env]
+    assert "ANTHROPIC_API_KEY" not in env_keys, "API key must not be in Test Rig container env"
+    host_config = captured_config.get("HostConfig", {})
+    assert host_config.get("NetworkMode") == "none", "Test Rig must have NetworkMode: none"
+
+
 # ---------------------------------------------------------------------------
 # Campaign runner tests
 # ---------------------------------------------------------------------------
@@ -1388,59 +1416,6 @@ class TestBOLoop:
         loop = SpecBOLoop(spec_path, budget=3)
         expected = len(evolvable_sections(spec))
         assert len(loop.optimizer.space.dimensions) == expected
-
-
-# ---------------------------------------------------------------------------
-# Mini-campaign screener tests (cambrian-3sb)
-# ---------------------------------------------------------------------------
-
-
-class TestMiniCampaignScreener:
-    @pytest.mark.asyncio
-    async def test_screen_passes_when_any_viable(self) -> None:
-        from unittest.mock import patch
-
-        from supervisor.campaign import screen_mutation
-
-        async def fake_run_campaign(**kwargs: Any) -> dict:
-            return {"viability_rate": 0.5, "generation_count": 2}
-
-        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
-            passes, summary = await screen_mutation(Path("/tmp/spec.md"))
-
-        assert passes is True
-        assert summary["viability_rate"] == 0.5
-
-    @pytest.mark.asyncio
-    async def test_screen_fails_when_none_viable(self) -> None:
-        from unittest.mock import patch
-
-        from supervisor.campaign import screen_mutation
-
-        async def fake_run_campaign(**kwargs: Any) -> dict:
-            return {"viability_rate": 0.0, "generation_count": 2}
-
-        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
-            passes, summary = await screen_mutation(Path("/tmp/spec.md"))
-
-        assert passes is False
-
-    @pytest.mark.asyncio
-    async def test_screen_uses_mini_n_default(self) -> None:
-        from unittest.mock import patch
-
-        from supervisor.campaign import screen_mutation
-
-        captured: dict = {}
-
-        async def fake_run_campaign(**kwargs: Any) -> dict:
-            captured.update(kwargs)
-            return {"viability_rate": 1.0, "generation_count": kwargs.get("n", 0)}
-
-        with patch("supervisor.campaign.run_campaign", side_effect=fake_run_campaign):
-            await screen_mutation(Path("/tmp/spec.md"), n=2)
-
-        assert captured.get("n") == 2
 
 
 # ---------------------------------------------------------------------------

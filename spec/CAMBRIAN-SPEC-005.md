@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Genome: What Prime Is"
-version: 0.15.0
+version: 0.16.0
 tags: [cambrian, prime, genome, LLM, self-reproduction, M1, M2]
 ---
 
@@ -54,7 +54,7 @@ The core challenge: the spec must be complete enough that a fresh LLM, with no e
 
 - Runtime performance optimization (M1 is functional, not fast)
 - Multi-language support (Python 3.14 only)
-- Production security (no authentication, no TLS)
+- Production-grade TLS/auth on the Supervisor API (container-level isolation is specified in BOOTSTRAP-SPEC-002 §3.3 and §3.6)
 - Dashboard or administrative UI
 - Horizontal scaling or multi-Prime coordination
 
@@ -234,7 +234,8 @@ Prime reads `status`. If `viable`, promote. If `non-viable`, rollback and option
 | `generation` | MUST | Integer matching the artifact's generation. |
 | `status` | MUST | One of: `viable`, `non-viable`. |
 | `failure_stage` | MUST | One of: `none`, `manifest`, `build`, `test`, `start`, `health`. First stage that failed, or `none` when viable. |
-| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` check MUST include `tests_run` and `tests_passed`. `health` check MAY include a `contracts` sub-object with per-contract results. |
+| `checks.*` | MUST | Each check MUST include `passed` (boolean). `duration_ms` SHOULD be included. `test` check MUST include `tests_run` and `tests_passed`. `health` check MAY include a `contracts` sub-object (per-contract results) and a `spec-vectors` sub-object (per-vector results from the FROZEN acceptance-vectors block). |
+| `fitness` | SHOULD | Quantitative fitness vector computed by the Test Rig. Present in all reports (viable and non-viable). Absent metrics indicate unattempted stages. Full schema in BOOTSTRAP-SPEC-002 §2.8. |
 | `completed_at` | MUST | ISO-8601 timestamp. |
 | `diagnostics` | MUST when `non-viable` | Present when `status` is `non-viable`, absent otherwise. Object with `stage`, `summary`, `exit_code`, `failures[]`, `stdout_tail`, `stderr_tail`. |
 
@@ -655,6 +656,7 @@ async def test_spawn(aiohttp_server):
 | `CAMBRIAN_SUPERVISOR_URL` | MAY | `http://host.docker.internal:8400` | Supervisor endpoint (Prime runs in a container; use `host.docker.internal` to reach the host) |
 | `CAMBRIAN_SPEC_PATH` | MAY | `./spec/CAMBRIAN-SPEC-005.md` | Path to spec file |
 | `CAMBRIAN_TOKEN_BUDGET` | MAY | `0` | Max cumulative tokens (0 = unlimited) |
+| `CAMBRIAN_MODE` | MAY | `m1` | Activation gate for M2. Valid values: `m1` (reproduction only), `m2` (spec mutation + BO loop). See BOOTSTRAP-SPEC-002 §8 for full definition. |
 
 ## Acceptance Criteria
 
@@ -960,7 +962,7 @@ The tier system adds checks **within** the health stage — the pipeline structu
 
 ```yaml
 spec-version: "005"
-version: "0.15.0"
+version: "0.16.0"
 organism: "cambrian"
 lineage: "genesis"
 language: "python 3.14 (M1)"

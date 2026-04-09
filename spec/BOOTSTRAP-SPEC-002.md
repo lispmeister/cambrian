@@ -2,7 +2,7 @@
 date: 2026-03-23
 author: Markus Fix <lispmeister@gmail.com>
 title: "Cambrian Bootstrap: Supervisor, Test Rig, and First Prime"
-version: 0.11.0
+version: 0.12.0
 tags: [cambrian, bootstrap, supervisor, test-rig, docker, M1, M2, contracts, diagnostics]
 ancestor: BOOTSTRAP-SPEC-001
 ---
@@ -169,6 +169,7 @@ All POST endpoints return `{"ok": false, "error": "..."}` on failure.
 | `generation` | MUST | Integer. The generation number being produced. |
 | `artifact-path` | MUST | String. Path relative to `CAMBRIAN_ARTIFACTS_ROOT`. The Supervisor resolves it to an absolute host path for the Docker bind mount. Example: `"gen-2"` resolves to `$CAMBRIAN_ARTIFACTS_ROOT/gen-2`. Prime runs inside Docker and cannot know the host-side absolute path — it MUST send a relative path. |
 | `spec-hash` | MUST | String. SHA-256 hex of the spec file (with `sha256:` prefix). |
+| `campaign-id` | MAY | String. Associates this generation with an M2 campaign. When present, stored in the generation record and usable as a filter on `GET /versions`. Format: `campaign-<8-char-uuid>`. |
 
 `POST /spawn` response: `{"ok": true, "container-id": "lab-gen-N", "generation": N}`
 
@@ -397,6 +398,8 @@ supervisor/
   bo_loop.py           — Bayesian optimization loop over spec mutations (M2)
   entanglement.py      — Spec modularity / entanglement monitor (M2)
   adaptive_tests.py    — Adaptive Tier X test generation (M2)
+  baseline.py          — Counterfactual baseline battery extraction and storage (§2.13)
+  prime_runner.py      — Host-side artifact generation via LLM for M2 campaigns
   test_supervisor.py   — Unit tests for all supervisor modules
 ```
 
@@ -449,6 +452,18 @@ Stage 2 — Build:
   - Timeout: 300 seconds (generous upper bound; `uv pip install` in an uncached container typically completes in under 30s — the timeout exists for pathological dependency trees, not normal cases)
   - Fail: non-zero exit code or timeout
 
+Stage 2a — Syntax Check (pre-test gate, runs after build succeeds):
+  - Compile every .py file in /workspace via ast.parse()
+  - Fail: any SyntaxError. Reports file:line. Failure recorded as failure_stage="build".
+  - Purpose: catches Python 3.14 syntax errors before pytest, producing a clear diagnostic instead of a confusing pytest collection error.
+
+Stage 2b — Structlog Lint (pre-test gate, runs after syntax check):
+  - AST-walk all .py files under /workspace/src/ for structlog anti-patterns:
+    - Double event kwargs (e.g., log.info("msg", event="other"))
+    - Printf-style format strings in the first positional arg (e.g., log.info("%s", val))
+  - Fail: any violation found. Reports file:line:pattern. Failure recorded as failure_stage="build".
+  - Purpose: prevents TypeError crashes at runtime from structlog misuse, which are otherwise silent until the server handles a request.
+
 Stage 3 — Test:
   - Run entry.test as shell command in /workspace
   - Capture stdout/stderr to extract test counts AND failure details (see §2.6)
@@ -456,6 +471,11 @@ Stage 3 — Test:
   - Parse pytest output for individual test failures (see §2.6 for format)
   - Timeout: 120 seconds (a well-written test suite for this codebase size should finish well under 2 minutes)
   - Fail: non-zero exit code or timeout
+
+Stage 3a — Import Check (pre-start gate, runs after tests pass):
+  - Extract the module name from entry.start when it uses `python -m <module>` form.
+  - Run `python -c "import <module>"` in /workspace. Fail: ImportError or timeout (30s). Failure recorded as failure_stage="start".
+  - Purpose: catches ModuleNotFoundError before the start stage, where it produces an opaque crash. Skipped if entry.start does not use the -m flag.
 
 Stage 4 — Start:
   - Run entry.start as background process
@@ -1246,26 +1266,34 @@ No custom Docker networks are needed for M1.
 
 ### 3.3 Credential Injection
 
-Credentials are injected via environment variables at container creation:
+**Test Rig containers MUST NOT receive `ANTHROPIC_API_KEY`.** The Test Rig makes no LLM calls. Withholding the key eliminates the credential exfiltration risk from organism code running during the build, test, and start stages.
+
+The Supervisor reads `ANTHROPIC_API_KEY` from its own environment for use by `prime_runner` on the host. It is never passed into Test Rig containers.
 
 ```python
+# Test Rig container — no API key
 config = {
     "Image": "cambrian-base",
     "Env": [
-        f"ANTHROPIC_API_KEY={os.environ['ANTHROPIC_API_KEY']}",
         "CAMBRIAN_SUPERVISOR_URL=http://host.docker.internal:8400",
+        f"CAMBRIAN_GENERATION={generation}",
     ],
     "HostConfig": {
         "Binds": [
             "/path/to/artifact:/workspace:rw",
             "/tmp/cambrian-output-XXXXXX:/output:rw",  # randomized temp dir
         ],
+        "NetworkMode": "none",  # see §3.6
     },
 }
 container = await client.containers.create_or_replace(name="lab-gen-N", config=config)
 ```
 
-The Supervisor reads `ANTHROPIC_API_KEY` from its own environment and passes it via the `Env` config. The key is never written to disk inside the container, never committed to git, never included in artifacts.
+### 3.6 Network Isolation
+
+Test Rig containers MUST be created with `"NetworkMode": "none"` in `HostConfig`. This disables all external network access while preserving loopback — the health stage calls `localhost:8401` inside the container and is unaffected.
+
+Combined with credential withholding (§3.3), this provides defense-in-depth: even if organism code attempts to exfiltrate data during evaluation, it has no credentials to send and no network path to send them on.
 
 ### 3.4 Workspace and Output Mounts
 
@@ -1300,6 +1328,8 @@ The test artifact proves:
 The test artifact lives in the **artifacts repository** as `gen-0/`. It is the zeroth generation — hand-crafted, not LLM-generated. The artifacts repo is separate from the Cambrian project repo and is initialized during Phase 0.
 
 ### 4.3 Contents
+
+**Note:** The test artifact is gen-0 (hand-crafted, not a Prime). Its `files` array lists only its own files, not the full Prime file set (which includes `spec/CAMBRIAN-SPEC-005.md` and `src/__init__.py`). It is validated by infrastructure tests, not by the Test Rig's manifest validation pipeline, so the Prime-specific validation rules do not apply to it.
 
 ```
 cambrian-artifacts/   ← separate git repo (CAMBRIAN_ARTIFACTS_ROOT)
@@ -1666,6 +1696,10 @@ All configuration is via environment variables on the host.
 
 These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2`).
 
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `CAMBRIAN_MODE` | MAY | `m1` | Activation gate. Valid values: `m1` (reproduction only — default), `m2` (enables spec mutation, campaigns, BO loop, adaptive tests, and Layers 2–3 verification). When absent or set to `m1`, all M2 infrastructure is dormant. |
+
 **Campaign runner (`campaign.py`):**
 
 | Variable | Required | Default | Purpose |
@@ -1679,7 +1713,7 @@ These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `CAMBRIAN_MUTATION_MODEL` | MAY | → `CAMBRIAN_ESCALATION_MODEL` → `claude-opus-4-6` | LLM model for Type 1 spec mutations. |
-| `CAMBRIAN_MUTATION_MAX_TOKENS` | MAY | `8192` | Max tokens for mutation LLM call. |
+| `CAMBRIAN_MUTATION_MAX_TOKENS` | MAY | `32768` | Max tokens for mutation LLM call. Must be large enough to output the full spec text (~12K–15K tokens). |
 | `CAMBRIAN_MUTATION_MAX_ATTEMPTS` | MAY | `3` | Max grammar-validation retry attempts per mutation. |
 
 **Bayesian optimization loop (`bo_loop.py`):**
@@ -1792,7 +1826,7 @@ These variables are only relevant when running spec evolution (`CAMBRIAN_MODE=m2
 
 ```yaml
 spec-version: "002"
-version: "0.11.0"
+version: "0.12.0"
 spec-type: "bootstrap"
 ancestor: "BOOTSTRAP-SPEC-001"
 language: "python 3.14"
